@@ -315,9 +315,22 @@ def test_verify_rejects_unhashable_issuer_not_raises():
 def test_verify_rejects_deeply_nested_scope_not_raises():
     # Live-found gap: canonicalize()'s own pure-Python recursion (not json.loads', which
     # decode()'s size cap/RecursionError catch already guard) trips at a MUCH smaller
-    # payload than the 16KB encoded-grant cap allows. This scope is sub-16KB and fires
-    # BEFORE any signature is checked, i.e. an unauthenticated payload with a resolvable
-    # (public) issuer id and a garbage proof.
+    # payload than the 16KB encoded-grant cap allows. This scope is sub-16KB and is
+    # reachable pre-authentication, at the issuer-signature-verification input (not
+    # "before any signature is checked" as an earlier draft of this comment claimed --
+    # imprecise; it fires AT that check, first-argument-permitting).
+    #
+    # CORRECTED after a fourth review pass found this test was VACUOUS: the original
+    # proof string "fakeproof" is not valid base64 (9 chars, invalid length), so
+    # _b64u_decode(grant.proof) -- the FIRST argument evaluated in
+    # issuer_key.verify(_b64u_decode(grant.proof), canonicalize(...)) -- raised
+    # binascii.Error before canonicalize() on the nested scope was ever reached. The
+    # test passed, but for the wrong reason, and would not have caught a regression in
+    # the depth guard. A prior commit misdiagnosed this as a "pytest execution-context /
+    # test-harness artifact" -- it wasn't; it's plain left-to-right argument-evaluation
+    # order, reproduced identically inside and outside pytest. Fixed by using a
+    # base64-VALID garbage proof ("AAAA") so _b64u_decode succeeds and execution
+    # actually reaches canonicalize(grant._signable_fields()).
     import base64
     import json as _json
 
@@ -350,7 +363,7 @@ def test_verify_rejects_deeply_nested_scope_not_raises():
         "expires_at": 2000.0,
     }
     body_b64 = base64.urlsafe_b64encode(_json.dumps(body).encode()).rstrip(b"=").decode()
-    encoded = f"{body_b64}.fakeproof"
+    encoded = f"{body_b64}.AAAA"  # base64-valid garbage proof, NOT "fakeproof" -- see comment above
     assert len(encoded) < 16_384
 
     result = verify(encoded, dummy_proof, resolver, now=1000.0)
