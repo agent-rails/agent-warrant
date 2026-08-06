@@ -23,7 +23,7 @@ Repository = "https://github.com/voltagebots/agent-warrant"
 Issues = "https://github.com/voltagebots/agent-warrant/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "hypothesis>=6.100"]
 
 [build-system]
 requires = ["setuptools>=68"]
