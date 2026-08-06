@@ -209,7 +209,15 @@ def verify(
     except (InvalidSignature, ValueError, TypeError, binascii.Error):
         return VerifyResult(valid=False, reason="invalid possession proof signature", checked_at=checked_at)
 
-    expected_binding = _b64u(hashlib.sha256(canonicalize(grant._signable_fields())).digest())
+    # Not independently reachable with a value that raises here -- grant._signable_fields()
+    # was already canonicalized successfully at the issuer-signature check above, and this is
+    # the same deterministic input -- but wrapped anyway so no canonicalize() call in this
+    # function sits outside a fail-closed handler, robust against a future refactor changing
+    # what reaches this line.
+    try:
+        expected_binding = _b64u(hashlib.sha256(canonicalize(grant._signable_fields())).digest())
+    except (ValueError, TypeError):
+        return VerifyResult(valid=False, reason="could not compute expected grant binding", checked_at=checked_at)
     if possession_proof.grant_binding != expected_binding:
         return VerifyResult(valid=False, reason="possession proof bound to a different grant", checked_at=checked_at)
 

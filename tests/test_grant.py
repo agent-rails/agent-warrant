@@ -312,6 +312,76 @@ def test_verify_rejects_unhashable_issuer_not_raises():
         assert result.valid is False
 
 
+def test_verify_rejects_deeply_nested_scope_not_raises():
+    # Live-found gap: canonicalize()'s own pure-Python recursion (not json.loads', which
+    # decode()'s size cap/RecursionError catch already guard) trips at a MUCH smaller
+    # payload than the 16KB encoded-grant cap allows. This scope is sub-16KB and fires
+    # BEFORE any signature is checked, i.e. an unauthenticated payload with a resolvable
+    # (public) issuer id and a garbage proof.
+    import base64
+    import json as _json
+
+    from agent_warrant.grant import CURRENT_VERSION, PossessionProof, verify
+    from agent_warrant.identity import generate_keypair
+    from agent_warrant.resolver import PinnedResolver
+
+    resolver = PinnedResolver({"team-a": generate_keypair().public_key()})
+    dummy_proof = PossessionProof(grant_binding="x", iat=1000.0, signature="y")
+
+    # List-based nesting (lower JSON overhead per level than dict-chain nesting), so this
+    # reaches Python's default recursion limit (~1000) while staying well under
+    # MAX_ENCODED_GRANT_BYTES (16KB) -- must be sub-cap to prove the gap is
+    # canonicalize()'s own recursion, not json.loads' (already guarded by the cap).
+    # Mutation-tested: a dict-chain version at a shallower depth did NOT reliably trigger
+    # Python's natural RecursionError once the explicit guard was removed, giving a false
+    # sense of coverage -- this shape does.
+    deeply_nested_list = []
+    cursor = deeply_nested_list
+    for _ in range(3000):
+        cursor.append([])
+        cursor = cursor[0]
+
+    body = {
+        "version": CURRENT_VERSION,
+        "issuer": "team-a",
+        "subject": "irrelevant",
+        "scope": {"items": deeply_nested_list},
+        "issued_at": 0.0,
+        "expires_at": 2000.0,
+    }
+    body_b64 = base64.urlsafe_b64encode(_json.dumps(body).encode()).rstrip(b"=").decode()
+    encoded = f"{body_b64}.fakeproof"
+    assert len(encoded) < 16_384
+
+    result = verify(encoded, dummy_proof, resolver, now=1000.0)
+    assert result.valid is False
+
+
+def test_verify_rejects_deeply_nested_grant_binding_not_raises():
+    # Second reachable path for the same gap: a validly-signed grant (so execution reaches
+    # the possession-proof signature check) presented with a possession proof whose
+    # grant_binding is deeply nested. Deliberately NOT constructed via prove() -- signing a
+    # deeply-nested body is now architecturally impossible through this library's own
+    # canonicalize()-based signer (confirmed live: prove() itself raises ValueError on nested
+    # input), which is the correct, more thorough outcome -- but a real attacker isn't
+    # required to use this library's signer at all, so verify() must still fail closed
+    # against a hand-built PossessionProof carrying an arbitrary (garbage-signed) nested
+    # grant_binding, not just against proofs this library would agree to construct.
+    from agent_warrant.grant import PossessionProof
+
+    grant, _, resolver, _ = _valid_grant_and_proof()
+
+    deeply_nested_binding = []
+    cursor = deeply_nested_binding
+    for _ in range(3000):
+        cursor.append([])
+        cursor = cursor[0]
+
+    bad_proof = PossessionProof(grant_binding=deeply_nested_binding, iat=1000.0, signature="garbage")
+    result = verify(grant.encode(), bad_proof, resolver, now=1000.0)
+    assert result.valid is False
+
+
 def test_sign_rejects_missing_required_field():
     issuer_private, _ = _issuer_and_resolver()
     with pytest.raises(ValueError, match="missing required grant fields"):
