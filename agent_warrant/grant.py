@@ -19,6 +19,14 @@ from .resolver import IssuerResolver
 
 CURRENT_VERSION = 1
 _REQUIRED_FIELDS = ("version", "issuer", "subject", "scope", "issued_at", "expires_at")
+# A compact authority claim never legitimately needs to be large. Bounding the encoded
+# string BEFORE any parsing closes a live-reproduced gap: an attacker-controlled deeply
+# nested JSON body (e.g. repeated `[[[...]]]`) reaches Python's C-accelerated json.loads
+# recursion limit and raises RecursionError, uncaught, falsifying this module's own
+# "never raises" contract -- found by adversarial review, reproduced live at ~391KB /
+# depth 150,000. This cap (well under the size needed to reach that depth) is the primary
+# defense; RecursionError is also added to decode()'s catch tuple as defense-in-depth.
+MAX_ENCODED_GRANT_BYTES = 16_384
 
 
 def _b64u(data: bytes) -> str:
@@ -65,10 +73,18 @@ class Grant:
 
     @classmethod
     def decode(cls, encoded: str) -> Grant:
+        if len(encoded) > MAX_ENCODED_GRANT_BYTES:
+            raise ValueError(f"malformed grant: encoded length {len(encoded)} exceeds {MAX_ENCODED_GRANT_BYTES} bytes")
         body_b64, _, proof = encoded.partition(".")
         if not proof:
             raise ValueError("malformed grant: missing '.' separator")
-        fields = json.loads(_b64u_decode(body_b64))
+        try:
+            fields = json.loads(_b64u_decode(body_b64))
+        except RecursionError as err:
+            # Defense-in-depth: the size cap above is what actually prevents reaching this,
+            # but a bare json.loads() recursion is not in the exception types this class's
+            # callers otherwise catch, so it's translated to a normal parse failure here too.
+            raise ValueError("malformed grant: body nesting too deep to parse") from err
         if not isinstance(fields, dict):
             raise ValueError("malformed grant: body is not a JSON object")
         missing = set(_REQUIRED_FIELDS) - fields.keys()
@@ -154,6 +170,15 @@ def verify(
         issuer_key.verify(_b64u_decode(grant.proof), canonicalize(grant._signable_fields()))
     except (InvalidSignature, ValueError, TypeError, binascii.Error):
         return VerifyResult(valid=False, reason="invalid issuer signature", checked_at=checked_at)
+
+    # Same reasoning as the possession_proof.iat guard below: the issuer signature only
+    # proves the ISSUER produced these values, not that they're well-typed -- a buggy or
+    # malicious pinned issuer could still sign a grant with a non-numeric timestamp.
+    # Symmetric fix for the same defect class found in the iat guard (asymmetry flagged
+    # by adversarial review: this comparison had no guard while iat's did).
+    for field_name, value in (("issued_at", grant.issued_at), ("expires_at", grant.expires_at)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return VerifyResult(valid=False, reason=f"grant has a non-numeric {field_name}", checked_at=checked_at)
 
     if not (grant.issued_at <= checked_at <= grant.expires_at):
         return VerifyResult(valid=False, reason="grant expired or not yet valid", checked_at=checked_at)

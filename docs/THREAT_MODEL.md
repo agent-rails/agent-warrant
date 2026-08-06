@@ -5,7 +5,7 @@
 **Prevent:**
 - A stolen `encoded_grant` string alone is not usable — verification requires a fresh `PossessionProof` signed by the private key matching the grant's `subject`. A captured grant with no proof, or a proof forged by a different keypair, is rejected. Live-verified: `tests/test_integration.py::test_stolen_grant_without_possession_proof_is_rejected`.
 - A grant issued by an unresolvable/unknown issuer is rejected (`UnresolvableIssuer`, caught inside `verify()`, never propagated).
-- An unsupported grant `version` is rejected before any other field is trusted or parsed.
+- An unsupported grant `version` is rejected before any other field is TRUSTED (not before parsed -- Grant.decode() parses the full JSON body, size-bounded to MAX_ENCODED_GRANT_BYTES, before the version check runs; corrected wording after review found the original 'or parsed' claim was false and the unbounded parse was a live resource-exhaustion / RecursionError gap, now closed by the size bound).
 - Every fail-closed exit in `verify()` uses narrow, named exception catches (`binascii.Error`, `ValueError`, `TypeError`, `json.JSONDecodeError`, `InvalidSignature`) around each parse/verify block — never a bare `except`, which would swallow a genuine bug (a `NameError` from a typo, an `AttributeError` from a real logic error) and misreport it as "invalid grant."
 
 **Contain:** all failures fail closed (`valid=False`); `verify()` never raises regardless of how malformed either `encoded_grant` or `possession_proof` are — every field in both is attacker-controlled.

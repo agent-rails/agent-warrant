@@ -188,6 +188,99 @@ def test_possession_proof_replay_within_window_at_different_verifier_succeeds():
     assert second.valid is True
 
 
+def test_verify_never_raises_on_deeply_nested_json():
+    # Reproduces the live-found gap exactly: a deeply-nested JSON body reaches
+    # json.loads' recursion limit and raises RecursionError, uncaught -- falsifying
+    # verify()'s own never-raises contract. Two independent defenses close this (the
+    # size cap AND the RecursionError catch in decode()) -- this test proves the
+    # overall contract holds, see the two isolated tests below for each mechanism.
+    grant, proof, resolver, _ = _valid_grant_and_proof()
+    huge_body = "[" * 200_000 + "]" * 200_000
+    oversized_encoded = huge_body + "." + grant.proof
+
+    result = verify(oversized_encoded, proof, resolver, now=1000.0)
+    assert result.valid is False
+
+
+def test_decode_rejects_oversized_flat_payload_isolating_size_cap():
+    # Isolates the size cap specifically: a large but FLAT payload (no deep nesting)
+    # cannot trigger RecursionError on its own, so this only fails closed if the size
+    # cap itself is doing the rejecting -- mutation-tested to confirm removing the
+    # size cap (independent of the RecursionError catch) turns this red.
+    import base64
+    import json as _json
+
+    from agent_warrant.grant import MAX_ENCODED_GRANT_BYTES, Grant
+
+    # A genuinely valid, parseable, FLAT (non-nested) body -- large only in byte count,
+    # so a RecursionError could never fire for it. If this is rejected, it can only be
+    # the size cap doing the rejecting, not the RecursionError defense-in-depth layer.
+    big_flat_body = {"padding": "x" * (MAX_ENCODED_GRANT_BYTES * 2)}
+    body_b64 = base64.urlsafe_b64encode(_json.dumps(big_flat_body).encode()).rstrip(b"=").decode()
+    with pytest.raises(ValueError, match="exceeds"):
+        Grant.decode(body_b64 + "." + "fakeproof")
+
+
+def test_decode_translates_recursion_error_to_value_error_isolating_that_catch(monkeypatch):
+    # Isolates the RecursionError-catch defense-in-depth layer specifically. A payload
+    # under the size cap that's ALSO deep enough to recurse doesn't exist in practice
+    # (the cap bounds nesting depth tightly enough to prevent it in this environment),
+    # so this proves the translation code path exists and works by simulating the
+    # failure directly, rather than only relying on the size cap to prevent reaching it.
+    import json as _json
+
+    from agent_warrant.grant import Grant
+
+    def _boom(*_a, **_kw):
+        raise RecursionError("simulated")
+
+    monkeypatch.setattr(_json, "loads", _boom)
+    with pytest.raises(ValueError, match="nesting too deep"):
+        Grant.decode("AA==.fakeproof")
+
+
+def test_verify_rejects_non_numeric_issued_at_not_raises():
+    # Symmetric regression for the asymmetry found by review: the iat guard existed,
+    # this one didn't. A validly-signed grant (the issuer signature covers whatever
+    # value issued_at holds, numeric or not) with a non-numeric issued_at must still
+    # fail closed, not raise TypeError out of the expiry comparison.
+    issuer_private, resolver = _issuer_and_resolver()
+    holder_private = generate_keypair()
+    fields = {
+        "version": CURRENT_VERSION,
+        "issuer": "team-a",
+        "subject": encode_public_key(holder_private.public_key()),
+        "scope": {"tool": "read_file"},
+        "issued_at": "not-a-number",
+        "expires_at": 2000.0,
+    }
+    grant = sign(fields, issuer_private)
+    proof = prove(grant, holder_private, now=1000.0)
+
+    result = verify(grant.encode(), proof, resolver, now=1000.0)
+    assert result.valid is False
+    assert "issued_at" in result.reason
+
+
+def test_verify_rejects_non_numeric_expires_at_not_raises():
+    issuer_private, resolver = _issuer_and_resolver()
+    holder_private = generate_keypair()
+    fields = {
+        "version": CURRENT_VERSION,
+        "issuer": "team-a",
+        "subject": encode_public_key(holder_private.public_key()),
+        "scope": {"tool": "read_file"},
+        "issued_at": 1000.0,
+        "expires_at": None,
+    }
+    grant = sign(fields, issuer_private)
+    proof = prove(grant, holder_private, now=1000.0)
+
+    result = verify(grant.encode(), proof, resolver, now=1000.0)
+    assert result.valid is False
+    assert "expires_at" in result.reason
+
+
 def test_sign_rejects_missing_required_field():
     issuer_private, _ = _issuer_and_resolver()
     with pytest.raises(ValueError, match="missing required grant fields"):
