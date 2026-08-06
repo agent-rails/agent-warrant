@@ -7,6 +7,7 @@
 - A grant issued by an unresolvable/unknown issuer is rejected (`UnresolvableIssuer`, caught inside `verify()`, never propagated).
 - An unsupported grant `version` is rejected before any other field is TRUSTED (not before parsed -- Grant.decode() parses the full JSON body, size-bounded to MAX_ENCODED_GRANT_BYTES, before the version check runs; corrected wording after review found the original 'or parsed' claim was false and the unbounded parse was a live resource-exhaustion / RecursionError gap, now closed by the size bound).
 - Every fail-closed exit in `verify()` uses narrow, named exception catches (`binascii.Error`, `ValueError`, `TypeError`, `json.JSONDecodeError`, `InvalidSignature`) around each parse/verify block — never a bare `except`, which would swallow a genuine bug (a `NameError` from a typo, an `AttributeError` from a real logic error) and misreport it as "invalid grant."
+- `grant.issuer` is type-checked (`isinstance(..., str)`) before being passed to `resolver.resolve()` — a second, independently-found live gap: an unhashable JSON value (a list or dict) as `issuer` made a dict-based resolver's `.get()` raise `TypeError`, reachable pre-authentication (before any signature check) with an unsigned, 185-byte payload. Same pattern as the timestamp guards: a value that reaches a resolver/comparison/arithmetic operation must be type-checked first, not assumed safe because it came from a JSON object.
 
 **Contain:** all failures fail closed (`valid=False`); `verify()` never raises regardless of how malformed either `encoded_grant` or `possession_proof` are — every field in both is attacker-controlled.
 
@@ -18,6 +19,17 @@
 - **VC-spec conformance.** `Grant` is VC-data-model-*shaped* (issuer, subject, claim, expiry, proof), not VC-spec-conformant. It carries no `@context`, no `credentialStatus`, and must never emit a literal `type: VerifiableCredential`. A real foreign VC verifier ingesting this and reading the absence of `credentialStatus` as "permanently valid, not revocable" would be wrong — this project's own verifier correctly treats absence of revocation infrastructure as "TTL is the only expiry mechanism," but a foreign verifier has no reason to know that convention.
 - **Cross-verifier replay within the freshness window.** `PossessionProof` binds to a specific `Grant` (via `grant_binding`) and has a freshness window (`max_age_seconds`, default 60s) — but no audience/verifier binding. A passive observer who captures a valid `(grant, proof)` pair can replay it at *any* verifier within that window. This is the same residual `agent-guard`'s own `verify_pop` has (a generous, non-single-use freshness window, not a nonce-tracked one), disclosed there for the same reason. Not closed in V1 — would need an `aud` field and a real reason (multi-verifier deployments) before adding that complexity.
 - **`did:web` / real trust bootstrap.** V1's `PinnedResolver` performs zero trust verification — it's out-of-band key pinning (TOFU). It does not, on its own, satisfy "verify without pre-established trust"; the caller is responsible for how the pinned key mapping was obtained and trusted. A `did:web`-based resolver (HTTPS + domain ownership, the same trust model as TLS today) is what would actually deliver that property — planned V2, not built.
+
+## Note on `MAX_ENCODED_GRANT_BYTES`'s two independent defenses
+
+The 16KB size cap and `decode()`'s `except RecursionError` both close the same
+resource-exhaustion / never-raises gap, but on different interpreters. The cap was
+measured against Python 3.14's own recursion threshold (~150,000 nesting levels);
+CPython's actual recursion limits are much lower on other supported versions
+(`requires-python = ">=3.10"` covers interpreters with recursion ceilings around
+1000-3000). On those, the `except RecursionError` catch is the defense that actually
+fires — the size cap alone does not make it unreachable. Both must be kept; neither
+is redundant given the full supported-version range.
 
 ## Pillar 2 — Canonicalization (`canonical.py`)
 

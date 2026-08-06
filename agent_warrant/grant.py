@@ -19,13 +19,24 @@ from .resolver import IssuerResolver
 
 CURRENT_VERSION = 1
 _REQUIRED_FIELDS = ("version", "issuer", "subject", "scope", "issued_at", "expires_at")
-# A compact authority claim never legitimately needs to be large. Bounding the encoded
-# string BEFORE any parsing closes a live-reproduced gap: an attacker-controlled deeply
-# nested JSON body (e.g. repeated `[[[...]]]`) reaches Python's C-accelerated json.loads
-# recursion limit and raises RecursionError, uncaught, falsifying this module's own
-# "never raises" contract -- found by adversarial review, reproduced live at ~391KB /
-# depth 150,000. This cap (well under the size needed to reach that depth) is the primary
-# defense; RecursionError is also added to decode()'s catch tuple as defense-in-depth.
+# A compact authority claim never legitimately needs to be large -- callers with a
+# genuinely large `scope` should reconsider the design, not raise this constant (see
+# README.md's documented constraint). Bounding the encoded string BEFORE any parsing
+# closes a live-reproduced gap: an attacker-controlled deeply nested JSON body (e.g.
+# repeated `[[[...]]]`) reaches json.loads' recursion limit and raises RecursionError,
+# uncaught, falsifying this module's own "never raises" contract.
+#
+# CORRECTED after a second review pass: this cap was originally described as the
+# "primary defense" with decode()'s `except RecursionError` framed as mere
+# defense-in-depth. That framing is backwards on most supported interpreters. It was
+# measured live only on Python 3.14 (threshold ~150,000 nesting levels, ~391KB) -- but
+# this project's own `requires-python = ">=3.10"` covers versions with much lower
+# recursion ceilings (CPython's own C_RECURSION_LIMIT is 3000 on Windows, 800 on
+# s390x, and 3.10/3.11 fall back to sys.getrecursionlimit(), ~1000 by default). A
+# nested payload of only a few KB -- comfortably UNDER this 16KB cap -- can trip
+# RecursionError on those interpreters. On them, the `except RecursionError` in
+# decode() is the load-bearing defense, not a redundant backstop; do not remove it on
+# the assumption this cap alone makes it unreachable.
 MAX_ENCODED_GRANT_BYTES = 16_384
 
 
@@ -160,6 +171,15 @@ def verify(
     if grant.version != CURRENT_VERSION:
         # STOP here -- no other field of a version we don't understand is trusted.
         return VerifyResult(valid=False, reason=f"unsupported grant version {grant.version!r}", checked_at=checked_at)
+
+    # grant.issuer is attacker-controlled JSON and reaches resolver.resolve() before any
+    # signature check -- an unhashable value (a list or dict) makes a dict-based resolver's
+    # .get() raise TypeError, uncaught here before this guard. Found live: a 185-byte
+    # unsigned payload with issuer=[] or issuer={} raised out of verify() with no
+    # authentication required at all. Same isinstance-guard-before-use pattern as the
+    # timestamp/iat guards elsewhere in this function.
+    if not isinstance(grant.issuer, str):
+        return VerifyResult(valid=False, reason="grant issuer is not a string", checked_at=checked_at)
 
     try:
         issuer_key = resolver.resolve(grant.issuer)

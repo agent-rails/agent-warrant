@@ -281,6 +281,37 @@ def test_verify_rejects_non_numeric_expires_at_not_raises():
     assert "expires_at" in result.reason
 
 
+def test_verify_rejects_unhashable_issuer_not_raises():
+    # Reproduces the live-found gap: an unauthenticated grant (no valid signature
+    # needed -- this happens before the signature check) with an unhashable JSON
+    # issuer (a list or dict) made a dict-based resolver's .get() raise TypeError,
+    # uncaught. Reachable with a 185-byte unsigned payload -- doesn't need a real
+    # issuer/holder keypair at all, only a version that passes the gate.
+    import base64
+    import json as _json
+
+    from agent_warrant.grant import CURRENT_VERSION, PossessionProof, verify
+    from agent_warrant.resolver import PinnedResolver
+
+    resolver = PinnedResolver({})
+    dummy_proof = PossessionProof(grant_binding="x", iat=1000.0, signature="y")
+
+    for bad_issuer in ([], {}, 123, None, True):
+        body = {
+            "version": CURRENT_VERSION,
+            "issuer": bad_issuer,
+            "subject": "irrelevant",
+            "scope": {},
+            "issued_at": 0.0,
+            "expires_at": 2000.0,
+        }
+        body_b64 = base64.urlsafe_b64encode(_json.dumps(body).encode()).rstrip(b"=").decode()
+        encoded = f"{body_b64}.fakeproof"
+
+        result = verify(encoded, dummy_proof, resolver, now=1000.0)
+        assert result.valid is False
+
+
 def test_sign_rejects_missing_required_field():
     issuer_private, _ = _issuer_and_resolver()
     with pytest.raises(ValueError, match="missing required grant fields"):

@@ -44,6 +44,10 @@ assert result.valid
 
 A stolen `grant.encode()` string alone is not enough — presenting it without a valid `PossessionProof` (or with a proof forged by a different keypair) is rejected. See `tests/test_integration.py::test_stolen_grant_without_possession_proof_is_rejected` for the live proof.
 
+## Constraints worth knowing before you hit them
+
+- **Encoded grant size**: capped at `agent_warrant.grant.MAX_ENCODED_GRANT_BYTES` (16KB). A compact authority claim never legitimately needs more — if your `scope` is large enough to hit this, reconsider what you're encoding into it rather than raising the constant (it's load-bearing for a resource-exhaustion defense, see docs/THREAT_MODEL.md).
+
 ## Design history worth knowing before extending this
 
 This design went through two real review cycles (documented in full at `~/identity-unification-plan.md` in the originating session) before any code was written. The most important correction: an earlier draft called `subject = holder's public key` alone "holder-binding" — it wasn't. A public key sitting in an issuer-signed credential with no separate possession check at verification time is still a bearer credential; anyone who intercepts the encoded grant can replay it. `PossessionProof` exists specifically to close that gap, mirroring `agent-guard`'s own `PoPProof`/`verify_pop` pattern. Read `docs/DESIGN.md` before changing anything in `grant.py`'s `verify()` — most of its structure (narrow exception catches, version-check-first ordering, the iat type guard) is there because a specific finding required it, not by convention.
