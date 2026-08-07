@@ -31,6 +31,10 @@ The single most important correction in this project's design history: an earlie
 
 There's a real pull toward designing this to also serve payment-authorization-style use cases (Cloudflare Wallets is a real, shipped comparable) or agent-workspace-style use cases, as a genuinely portable Layer-0 primitive. That's in tension with this project's own stated preference for narrow, deeply-verified primitives over speculative generality (the same principle `agent-guard`'s `DESIGN.md` states explicitly, and the same principle a review flagged on this exact plan). Resolution: build the narrow agent-authority claim, verified deeply. Let portability be an emergent property (would an unrelated team take it as-is) rather than a design-time goal that adds wallet/workspace-shaped fields before a second real consumer exists.
 
+## External validation, checked live not assumed
+
+Two independent vendors have shipped real, per-agent asymmetric-cryptography identity in 2026: [Cloudflare Wallets](https://blog.cloudflare.com/wallets/) (agent identity + payment authorization, spending caps) and [Block's Buzz](https://github.com/block/buzz) (per-agent Nostr keypairs, Schnorr/secp256k1-signed events, for chat/Git-forge audit-log integrity). Different curves, different data models, different problems -- but the same underlying instinct: agents need first-class cryptographic identity, not a shared secret or an inherited human credential. Worth citing as market validation for this project's general direction. Neither is an interop target: Buzz's signing scheme has no delegation/scoped-grant concept comparable to a `Grant`, and Cloudflare Wallets is a closed platform service, not a portable format.
+
 ## Reuse, not reimplementation
 
 - The crypto primitive (Ed25519) is the same one `agent-guard`'s own PoP already uses — not a new choice.
