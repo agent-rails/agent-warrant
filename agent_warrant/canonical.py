@@ -57,3 +57,6 @@ def _validate(value: Any, depth: int) -> None:
         for inner in value:
             _validate(inner, depth + 1)
         return
+    if isinstance(value, (str, int)) or value is None:
+        return
+    raise ValueError(f"{type(value).__name__} cannot be canonicalized: not a JSON-representable type")

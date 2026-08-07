@@ -101,6 +101,11 @@ class Grant:
         missing = set(_REQUIRED_FIELDS) - fields.keys()
         if missing:
             raise ValueError(f"malformed grant: missing fields {sorted(missing)}")
+        # scope's type annotation (dict[str, Any]) is not enforced by json.loads --
+        # an issuer-signed grant with a non-dict scope would otherwise reach callers
+        # doing grant.scope["tool"] and hit a runtime TypeError far from this boundary.
+        if not isinstance(fields["scope"], dict):
+            raise ValueError("malformed grant: scope is not a JSON object")
         return cls(**{k: fields[k] for k in _REQUIRED_FIELDS}, proof=proof)
 
 
