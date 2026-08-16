@@ -12,6 +12,8 @@ def test_cross_org_grant_verified_with_no_shared_secret():
     holder = HolderKeypair(holder_private)
     holder_public_b64 = encode_public_key(holder_private.public_key())
 
+    # path_prefix is illustrative application data; the library authenticates
+    # the scope but does not interpret or enforce it for authorization.
     grant = issuer.issue(subject=holder_public_b64, scope={"tool": "read_file", "path_prefix": "/reports/"})
     proof = holder.prove_possession(grant)
 
