@@ -38,6 +38,7 @@ _REQUIRED_FIELDS = ("version", "issuer", "subject", "scope", "issued_at", "expir
 # decode() is the load-bearing defense, not a redundant backstop; do not remove it on
 # the assumption this cap alone makes it unreachable.
 MAX_ENCODED_GRANT_BYTES = 16_384
+POSSESSION_PROOF_CLOCK_SKEW_SECONDS = 5.0
 
 
 def _b64u(data: bytes) -> str:
@@ -145,6 +146,10 @@ def prove(grant: Grant, holder_private_key: Ed25519PrivateKey, now: float | None
 
 @dataclass(frozen=True)
 class VerifyResult:
+    """Authentication result only. `valid=True` means the grant is authentic,
+    unexpired, and holder-bound; callers remain entirely responsible for
+    interpreting `grant.scope` and making authorization decisions."""
+
     valid: bool
     reason: str
     grant: Grant | None = None
@@ -173,7 +178,7 @@ def verify(
     except (ValueError, TypeError, KeyError, binascii.Error, json.JSONDecodeError):
         return VerifyResult(valid=False, reason="malformed grant encoding", checked_at=checked_at)
 
-    if grant.version != CURRENT_VERSION:
+    if not isinstance(grant.version, int) or isinstance(grant.version, bool) or grant.version != CURRENT_VERSION:
         # STOP here -- no other field of a version we don't understand is trusted.
         return VerifyResult(valid=False, reason=f"unsupported grant version {grant.version!r}", checked_at=checked_at)
 
@@ -209,9 +214,12 @@ def verify(
         return VerifyResult(valid=False, reason="grant expired or not yet valid", checked_at=checked_at)
 
     try:
+        proof_fields = possession_proof._signable_fields()
+        binding = proof_fields["grant_binding"]
+        iat = proof_fields["iat"]
         holder_key = decode_public_key(grant.subject)
-        holder_key.verify(_b64u_decode(possession_proof.signature), canonicalize(possession_proof._signable_fields()))
-    except (InvalidSignature, ValueError, TypeError, binascii.Error):
+        holder_key.verify(_b64u_decode(possession_proof.signature), canonicalize(proof_fields))
+    except (InvalidSignature, ValueError, TypeError, KeyError, binascii.Error):
         return VerifyResult(valid=False, reason="invalid possession proof signature", checked_at=checked_at)
 
     # Not independently reachable with a value that raises here -- grant._signable_fields()
@@ -223,17 +231,17 @@ def verify(
         expected_binding = _b64u(hashlib.sha256(canonicalize(grant._signable_fields())).digest())
     except (ValueError, TypeError):
         return VerifyResult(valid=False, reason="could not compute expected grant binding", checked_at=checked_at)
-    if possession_proof.grant_binding != expected_binding:
+    if binding != expected_binding:
         return VerifyResult(valid=False, reason="possession proof bound to a different grant", checked_at=checked_at)
 
     # iat is attacker-controlled (part of a signed body, but the signature check above only
     # proves the HOLDER produced it -- a buggy holder client could still sign a bad iat).
     # isinstance/isfinite guard BEFORE the arithmetic, matching pop.py's own precedent, so a
     # non-numeric iat can't raise TypeError out of this never-raises function.
-    iat = possession_proof.iat
     if isinstance(iat, bool) or not isinstance(iat, (int, float)) or not math.isfinite(iat):
         return VerifyResult(valid=False, reason="possession proof has a non-numeric iat", checked_at=checked_at)
-    if abs(checked_at - iat) > max_age_seconds:
+    age = checked_at - iat
+    if age < -POSSESSION_PROOF_CLOCK_SKEW_SECONDS or age > max_age_seconds:
         return VerifyResult(valid=False, reason="possession proof is stale", checked_at=checked_at)
 
     return VerifyResult(valid=True, reason="ok", grant=grant, checked_at=checked_at)

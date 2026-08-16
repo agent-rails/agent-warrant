@@ -8,6 +8,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .grant import CURRENT_VERSION, Grant, PossessionProof, VerifyResult, prove, sign, verify
 from .resolver import IssuerResolver
 
+MAX_TTL_SECONDS = 86_400.0
+
 
 class Issuer:
     """Holds `private_key` once, for the object's lifetime, rather than
@@ -28,6 +30,11 @@ class Issuer:
         ttl = ttl_seconds if ttl_seconds is not None else self._default_ttl_seconds
         if ttl <= 0:
             raise ValueError(f"ttl_seconds must be positive, got {ttl!r}")
+        if ttl > MAX_TTL_SECONDS:
+            raise ValueError(
+                f"ttl_seconds must not exceed {MAX_TTL_SECONDS!r}; "
+                "V1 has no revocation, so long-lived grants defeat TTL-only containment"
+            )
         if not isinstance(scope, dict):
             raise TypeError(f"scope must be a dict, got {type(scope).__name__}")
         now = time.time()

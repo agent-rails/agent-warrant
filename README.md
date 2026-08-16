@@ -2,7 +2,7 @@
 
 A portable, cryptographically-verifiable authority grant for AI agents — cross-org, no shared infrastructure.
 
-Lets one team's AI agent cryptographically verify another team's agent's delegated authority, with no shared secret and no pre-established trust relationship beyond agreeing on the credential format. Spun out of [`agent-guard`](https://github.com/voltagebots/agent-guard) (which stays the local, single-org authorization/audit boundary) specifically because cross-org verification needs a different crypto trust model — asymmetric signing, not a shared HMAC secret.
+Lets one team's AI agent cryptographically verify another team's agent's delegated authority, with no shared secret. V1 requires out-of-band issuer-key pinning via `PinnedResolver`; no-prearranged-trust bootstrap via `did:web` is planned for V2. Spun out of [`agent-guard`](https://github.com/voltagebots/agent-guard) (which stays the local, single-org authorization/audit boundary) specifically because cross-org verification needs a different crypto trust model — asymmetric signing, not a shared HMAC secret.
 
 Deeper reference: [`docs/DESIGN.md`](docs/DESIGN.md) (why it's shaped this way, including the design history — what was tried, what was corrected, and why), [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) (what's defended, what's explicitly not).
 
@@ -35,6 +35,8 @@ grant = issuer.issue(subject=encode_public_key(holder_key.public_key()), scope={
 proof = holder.prove_possession(grant)
 
 # Team B: only ever obtains team A's PUBLIC key, out-of-band. No shared secret.
+# `path_prefix` is illustrative application data: agent-warrant authenticates
+# the scope but does not interpret or enforce it for authorization.
 resolver = PinnedResolver({"team-a": team_a_key.public_key()})
 verifier = Verifier(resolver)
 

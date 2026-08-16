@@ -34,6 +34,17 @@ def _valid_grant_and_proof(now: float = 1000.0):
     return grant, proof, resolver, holder_private
 
 
+def test_issuer_rejects_ttl_above_revocation_free_limit():
+    from agent_warrant.issuer import MAX_TTL_SECONDS, Issuer
+
+    issuer = Issuer(issuer_id="team-a", private_key=generate_keypair())
+    holder_private = generate_keypair()
+    subject = encode_public_key(holder_private.public_key())
+
+    with pytest.raises(ValueError, match="no revocation"):
+        issuer.issue(subject, {"tool": "read_file"}, ttl_seconds=MAX_TTL_SECONDS + 1)
+
+
 def test_sign_and_verify_roundtrip():
     grant, proof, resolver, _ = _valid_grant_and_proof()
     result = verify(grant.encode(), proof, resolver, now=1010.0)
@@ -60,6 +71,20 @@ def test_verify_rejects_unsupported_version_before_parsing_other_fields():
 
     bad_body = _b64u(canonicalize(tampered._signable_fields()))
     bad_encoded = f"{bad_body}.{grant.proof}"
+    result = verify(bad_encoded, proof, resolver, now=1000.0)
+    assert result.valid is False
+    assert "version" in result.reason
+
+
+def test_verify_rejects_boolean_version():
+    from agent_warrant.canonical import canonicalize
+    from agent_warrant.grant import _b64u
+
+    grant, proof, resolver, _ = _valid_grant_and_proof()
+    tampered = replace(grant, version=True)
+    bad_body = _b64u(canonicalize(tampered._signable_fields()))
+    bad_encoded = f"{bad_body}.{grant.proof}"
+
     result = verify(bad_encoded, proof, resolver, now=1000.0)
     assert result.valid is False
     assert "version" in result.reason
@@ -169,9 +194,52 @@ def test_verify_rejects_possession_proof_bound_to_different_grant():
     assert "different grant" in result.reason
 
 
+def test_verify_uses_same_possession_proof_fields_for_all_trust_decisions():
+    from agent_warrant.grant import PossessionProof
+
+    issuer_private, resolver = _issuer_and_resolver()
+    holder_private = generate_keypair()
+    fields = {
+        "version": CURRENT_VERSION,
+        "issuer": "team-a",
+        "subject": encode_public_key(holder_private.public_key()),
+        "scope": {"tool": "read_file"},
+        "issued_at": 0.0,
+        "expires_at": 10_000.0,
+    }
+    grant = sign(fields, issuer_private)
+    old_proof = prove(grant, holder_private, now=100.0)
+
+    class DecoupledProof(PossessionProof):
+        def _signable_fields(self):
+            return {
+                "grant_binding": old_proof.grant_binding,
+                "iat": old_proof.iat,
+            }
+
+    deceptive_proof = DecoupledProof(
+        grant_binding=old_proof.grant_binding,
+        iat=9_000.0,
+        signature=old_proof.signature,
+    )
+    result = verify(grant.encode(), deceptive_proof, resolver, now=9_000.0)
+    assert result.valid is False
+    assert "stale" in result.reason
+
+
 def test_verify_rejects_stale_possession_proof():
     grant, proof, resolver, _ = _valid_grant_and_proof(now=1000.0)
     result = verify(grant.encode(), proof, resolver, now=1000.0 + 61.0, max_age_seconds=60.0)
+    assert result.valid is False
+    assert "stale" in result.reason
+
+
+def test_verify_rejects_proof_postdated_beyond_clock_skew_allowance():
+    from agent_warrant.grant import POSSESSION_PROOF_CLOCK_SKEW_SECONDS
+
+    grant, _, resolver, holder_private = _valid_grant_and_proof(now=1000.0)
+    proof = prove(grant, holder_private, now=1000.0 + POSSESSION_PROOF_CLOCK_SKEW_SECONDS + 1.0)
+    result = verify(grant.encode(), proof, resolver, now=1000.0)
     assert result.valid is False
     assert "stale" in result.reason
 
