@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .grant import CURRENT_VERSION, Grant, PossessionProof, VerifyResult, prove, sign, verify
 from .resolver import IssuerResolver
+from .revocation import RevocationChecker
 
 MAX_TTL_SECONDS = 86_400.0
 
@@ -32,8 +33,10 @@ class Issuer:
             raise ValueError(f"ttl_seconds must be positive, got {ttl!r}")
         if ttl > MAX_TTL_SECONDS:
             raise ValueError(
-                f"ttl_seconds must not exceed {MAX_TTL_SECONDS!r}; "
-                "V1 has no revocation, so long-lived grants defeat TTL-only containment"
+                f"ttl_seconds must not exceed {MAX_TTL_SECONDS!r}; a grant this issuer signs "
+                "has no revocation unless the verifier opts in with a RevocationChecker (see "
+                "revocation.py) -- this Issuer cannot guarantee that, so long-lived grants "
+                "still defeat TTL-only containment by default"
             )
         if not isinstance(scope, dict):
             raise TypeError(f"scope must be a dict, got {type(scope).__name__}")
@@ -64,11 +67,26 @@ class HolderKeypair:
 class Verifier:
     """Holds an IssuerResolver instance (and its cache, once a caching
     resolver wrapper exists) rather than re-threading it through every
-    verify() call site."""
+    verify() call site. `revocation_checker` is opt-in and None by default --
+    a Verifier constructed without one behaves exactly as before revocation
+    checking existed (TTL is the only expiry mechanism); see revocation.py
+    and docs/THREAT_MODEL.md for what wiring one in actually buys you."""
 
-    def __init__(self, resolver: IssuerResolver, max_age_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        resolver: IssuerResolver,
+        max_age_seconds: float = 60.0,
+        revocation_checker: RevocationChecker | None = None,
+    ) -> None:
         self._resolver = resolver
         self._max_age_seconds = max_age_seconds
+        self._revocation_checker = revocation_checker
 
     def check(self, encoded_grant: str, possession_proof: PossessionProof) -> VerifyResult:
-        return verify(encoded_grant, possession_proof, self._resolver, max_age_seconds=self._max_age_seconds)
+        return verify(
+            encoded_grant,
+            possession_proof,
+            self._resolver,
+            max_age_seconds=self._max_age_seconds,
+            revocation_checker=self._revocation_checker,
+        )
