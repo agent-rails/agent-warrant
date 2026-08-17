@@ -2,15 +2,16 @@
 
 A portable, cryptographically-verifiable authority grant for AI agents — cross-org, no shared infrastructure.
 
-Lets one team's AI agent cryptographically verify another team's agent's delegated authority, with no shared secret. V1 requires out-of-band issuer-key pinning via `PinnedResolver`; no-prearranged-trust bootstrap via `did:web` is planned for V2. Spun out of [`agent-guard`](https://github.com/agent-rails/agent-guard) (which stays the local, single-org authorization/audit boundary) specifically because cross-org verification needs a different crypto trust model — asymmetric signing, not a shared HMAC secret.
+Lets one team's AI agent cryptographically verify another team's agent's delegated authority, with no shared secret. Ships two `IssuerResolver` implementations: out-of-band issuer-key pinning via `PinnedResolver` (TOFU), and real trust bootstrap via `DidWebResolver` (HTTPS + domain ownership, per the [did:web method spec](https://w3c-ccg.github.io/did-method-web/)). Also ships opt-in revocation checking (`RevocationChecker`) — pre-expiry invalidation of a specific `Grant`, checked as the last gate in `verify()`. Spun out of [`agent-guard`](https://github.com/agent-rails/agent-guard) (which stays the local, single-org authorization/audit boundary) specifically because cross-org verification needs a different crypto trust model — asymmetric signing, not a shared HMAC secret.
 
 Deeper reference: [`docs/DESIGN.md`](docs/DESIGN.md) (why it's shaped this way, including the design history — what was tried, what was corrected, and why), [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) (what's defended, what's explicitly not).
 
 ## The shape
 
-- A `Grant` is issuer-signed (Ed25519), scoped, expiring — VC-data-model-*shaped*, not VC-spec-conformant (no `credentialStatus`/revocation; see THREAT_MODEL.md).
+- A `Grant` is issuer-signed (Ed25519), scoped, expiring — VC-data-model-*shaped*, not VC-spec-conformant (no `credentialStatus` field on the Grant itself; see THREAT_MODEL.md). Revocation checking exists, but as a separate, opt-in gate `verify()` runs against a caller-supplied `RevocationChecker` — not as data carried on the credential.
 - `subject` is the holder's public key — but a Grant alone is still a bearer credential unless paired with a fresh `PossessionProof` at verification time, proving the presenter actually holds the matching private key.
-- `IssuerResolver` resolves an issuer identifier to a public key. V1 ships `PinnedResolver` — honestly named: it performs zero trust verification, it's out-of-band key pinning (TOFU). A `did:web`-based resolver (real trust bootstrap via HTTPS + domain ownership) is a planned V2, not built here.
+- `IssuerResolver` resolves an issuer identifier to a public key. `PinnedResolver` — honestly named: it performs zero trust verification, it's out-of-band key pinning (TOFU). `DidWebResolver` is real trust bootstrap via HTTPS + domain ownership: it fetches `https://<domain>/.well-known/did.json` (or a path-scoped variant, e.g. `example.com:agents:team-a` → `https://example.com/agents/team-a/did.json`) and extracts an Ed25519 key from the DID document. Every failure (DNS/HTTP error, non-2xx status, malformed document, wrong key type, no matching `verificationMethod`) fails closed as `UnresolvableIssuer`.
+- Revocation is opt-in: a `Verifier` constructed without a `revocation_checker` behaves exactly as before this existed — TTL is the only expiry mechanism. Opting in means the issuer publishes a `RevocationList` (a signed set of revoked `grant_binding` values — see `sign_revocation_list()`), and a caller wires up `StaticRevocationChecker` (for an already-fetched list) or `HttpRevocationChecker` (fetches + verifies on every `is_revoked()` call, no caching). Any inability to determine revocation status — fetch failure, malformed list, bad signature — fails closed: the grant is rejected, never silently treated as "not revoked."
 
 ## Install
 
@@ -46,9 +47,45 @@ assert result.valid
 
 A stolen `grant.encode()` string alone is not enough — presenting it without a valid `PossessionProof` (or with a proof forged by a different keypair) is rejected. See `tests/test_integration.py::test_stolen_grant_without_possession_proof_is_rejected` for the live proof.
 
+### did:web, instead of pinning
+
+```python
+from agent_warrant import DidWebResolver, Verifier
+
+# No out-of-band key exchange -- team-a's key is fetched from
+# https://team-a.example.com/.well-known/did.json and cryptographically
+# tied to domain ownership over HTTPS, the same trust model TLS uses.
+resolver = DidWebResolver()
+verifier = Verifier(resolver)
+result = verifier.check(grant.encode(), proof)  # grant.issuer == "team-a.example.com"
+```
+
+### Revocation, opt-in
+
+```python
+from agent_warrant import StaticRevocationChecker, Verifier, sign_revocation_list
+
+# Team A decides to invalidate a specific grant before its TTL expires
+# (compromised holder key, mistaken scope, ended sponsorship) and signs a
+# RevocationList naming it -- by grant_binding, this project's stable
+# identity for a specific Grant (see PossessionProof.grant_binding).
+revocation_list = sign_revocation_list("team-a", [proof.grant_binding], team_a_key)
+
+# Team B opts in by wiring a RevocationChecker into its Verifier. Without
+# this, revocation is never checked -- default behavior is unchanged.
+checker = StaticRevocationChecker(revocation_list, resolver)
+verifier = Verifier(resolver, revocation_checker=checker)
+result = verifier.check(grant.encode(), proof)
+assert result.valid is False and "revoked" in result.reason
+```
+
+`HttpRevocationChecker` + `HttpRevocationListFetcher` do the same thing over HTTPS instead of an in-process `RevocationList` -- fetching and re-verifying the signed list on every `is_revoked()` call, no caching. If the revocation endpoint is unreachable, verification fails closed (rejected), not open.
+
 ## Constraints worth knowing before you hit them
 
 - **Encoded grant size**: capped at `agent_warrant.grant.MAX_ENCODED_GRANT_BYTES` (16KB). A compact authority claim never legitimately needs more — if your `scope` is large enough to hit this, reconsider what you're encoding into it rather than raising the constant (it's load-bearing for a resource-exhaustion defense, see docs/THREAT_MODEL.md).
+- **`DidWebResolver` fetches on every `resolve()` call, no caching.** And because `grant.issuer` reaches `resolver.resolve()` before any signature check, an unauthenticated grant can make the verifying process issue an outbound HTTPS request to an attacker-influenced host. `https_fetch.py` rejects resolution to private/loopback/link-local/reserved/multicast addresses before connecting (SSRF hardening) -- see docs/THREAT_MODEL.md for the residual (a DNS-rebinding TOCTOU gap in that check).
+- **Revocation is opt-in and unbundled from StatusList2021.** It's a small signed set of revoked `grant_binding` values, sized for a known, bounded cross-org verifier population -- not the anonymity-preserving bitstring StatusList2021 uses for public, anonymous-verifier scale. See docs/DESIGN.md for why that tradeoff fits this project's actual shape.
 
 ## Design history worth knowing before extending this
 

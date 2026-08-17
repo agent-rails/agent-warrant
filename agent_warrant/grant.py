@@ -13,9 +13,10 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .canonical import canonicalize
-from .exceptions import UnresolvableIssuer
+from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
 from .identity import decode_public_key
 from .resolver import IssuerResolver
+from .revocation import RevocationChecker
 
 CURRENT_VERSION = 1
 _REQUIRED_FIELDS = ("version", "issuer", "subject", "scope", "issued_at", "expires_at")
@@ -52,11 +53,16 @@ def _b64u_decode(data: str) -> bytes:
 @dataclass(frozen=True)
 class Grant:
     """A VC-data-model-*shaped* authority grant -- NOT VC-spec-conformant.
-    In particular there is no `credentialStatus`/StatusList2021 revocation
-    mechanism (see docs/THREAT_MODEL.md's explicit non-goal); do not emit or
-    expect a literal `type: VerifiableCredential`, which would invite a real
-    VC verifier to misread the absence of revocation status as "permanently
-    valid." `subject` is the holder's public key -- this is a holder-bound
+    There is no `credentialStatus`/StatusList2021 field on the Grant itself
+    (see docs/DESIGN.md for why this project's revocation mechanism is
+    deliberately NOT StatusList2021-shaped); do not emit or expect a literal
+    `type: VerifiableCredential`, which would invite a real VC verifier to
+    misread the absence of `credentialStatus` as "permanently valid." Real,
+    opt-in revocation checking DOES exist (see `revocation.py`'s
+    RevocationChecker, wired into verify() below) -- it lives outside the
+    Grant's own fields, as a separate check verify() runs against a
+    caller-supplied checker, not as data carried on the credential.
+    `subject` is the holder's public key -- this is a holder-bound
     credential, not a bearer one, but ONLY when paired with a fresh
     PossessionProof at verification time (see verify() below); the Grant's
     own `proof` field is the ISSUER's signature, not a possession proof."""
@@ -162,13 +168,15 @@ def verify(
     resolver: IssuerResolver,
     now: float | None = None,
     max_age_seconds: float = 60.0,
+    revocation_checker: RevocationChecker | None = None,
 ) -> VerifyResult:
     """Never raises -- encoded_grant AND possession_proof are both
     attacker-controlled. Every branch is a fail-closed exit with a narrow,
     named exception catch (binascii.Error, ValueError, TypeError,
-    json.JSONDecodeError, InvalidSignature) around each parse/verify block --
-    never a bare `except`, which would swallow a real bug (a NameError from a
-    typo, an AttributeError from a genuine logic error) and misreport it as
+    json.JSONDecodeError, InvalidSignature, RevocationSourceUnreachable)
+    around each parse/verify block -- never a bare `except`, which would
+    swallow a real bug (a NameError from a typo, an AttributeError from a
+    genuine logic error) and misreport it as
     "invalid grant" instead of surfacing it. Matches agent_guard's own
     verify_pop discipline exactly (agentguard_identity/pop.py)."""
     checked_at = now if now is not None else time.time()
@@ -243,5 +251,20 @@ def verify(
     age = checked_at - iat
     if age < -POSSESSION_PROOF_CLOCK_SKEW_SECONDS or age > max_age_seconds:
         return VerifyResult(valid=False, reason="possession proof is stale", checked_at=checked_at)
+
+    # Opt-in, checked LAST -- only once a grant has already passed every other
+    # check, so an unauthenticated or already-invalid grant never triggers a
+    # revocation lookup (cheaper, and avoids exposing the revocation source to
+    # queries about grants that were never valid to begin with). Reuses
+    # `expected_binding` (already computed above as this grant's grant_binding)
+    # rather than recomputing it -- see THREAT_MODEL.md: grant_binding, not the
+    # raw encoded string, is this project's stable identity for a specific Grant.
+    if revocation_checker is not None:
+        try:
+            revoked = revocation_checker.is_revoked(expected_binding)
+        except RevocationSourceUnreachable as err:
+            return VerifyResult(valid=False, reason=f"revocation status unavailable: {err}", checked_at=checked_at)
+        if revoked:
+            return VerifyResult(valid=False, reason="grant has been revoked", checked_at=checked_at)
 
     return VerifyResult(valid=True, reason="ok", grant=grant, checked_at=checked_at)
