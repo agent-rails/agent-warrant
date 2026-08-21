@@ -261,7 +261,11 @@ def verify(
     # raw encoded string, is this project's stable identity for a specific Grant.
     if revocation_checker is not None:
         try:
-            revoked = revocation_checker.is_revoked(expected_binding)
+            # grant.issuer is the ALREADY-AUTHENTICATED issuer (its signature was
+            # verified above). Passing it lets the checker bind revocation status
+            # to this issuer -- so another issuer's authentic (empty) list can't
+            # vouch "not revoked" for this grant.
+            revoked = revocation_checker.is_revoked(grant.issuer, expected_binding)
         except RevocationSourceUnreachable as err:
             return VerifyResult(valid=False, reason=f"revocation status unavailable: {err}", checked_at=checked_at)
         if revoked:
