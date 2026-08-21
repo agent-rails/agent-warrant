@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import http.client
 import json
 import re
 from typing import Any, Protocol
@@ -12,6 +13,16 @@ from .exceptions import UnresolvableIssuer
 from .https_fetch import DEFAULT_HTTPS_TIMEOUT_SECONDS, https_get
 
 MAX_DID_DOCUMENT_BYTES = 65_536
+
+# A real Ed25519 key is ~44 base58 chars (raw) / ~47 (multicodec-prefixed) /
+# ~44 base64url chars (JWK x). These caps reject an over-long encoded value
+# BEFORE it reaches the O(n^2) big-int base58 accumulation or a base64 decode,
+# closing an algorithmic-complexity DoS on an attacker-controlled document
+# field (a 65KB string took ~1 CPU-second before this bound).
+_MAX_ENCODED_KEY_CHARS = 128
+# Cap how many verificationMethod entries are examined so a document packed
+# with thousands of entries cannot multiply per-entry decode cost.
+_MAX_VERIFICATION_METHODS = 16
 
 _DOMAIN_PORT_RE = re.compile(
     r"^(?P<host>[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
@@ -71,21 +82,26 @@ class DidWebResolver:
     resolves to https://example.com:3000/.well-known/did.json.
 
     Every failure mode fails closed as UnresolvableIssuer -- DNS/connection
-    failure, non-2xx HTTP status, oversized response, malformed JSON, a
-    document missing verificationMethod, or a verificationMethod that isn't
-    a supported Ed25519 key encoding (publicKeyMultibase/Multikey,
-    publicKeyJwk/JsonWebKey2020 OKP+Ed25519, or the legacy
-    publicKeyBase58/Ed25519VerificationKey2018 form). The scheme is
-    hardcoded to HTTPS (see https_fetch.https_get) so no attacker-controlled
-    issuer string can make this resolver speak plaintext HTTP, and redirects
-    are never followed, so a compromised host can't downgrade a resolution
-    via a 3xx Location header.
+    failure, non-200 HTTP status, oversized response, malformed JSON, a
+    document whose `id` does not match the requested DID, a document missing
+    verificationMethod, or a verificationMethod that isn't a supported Ed25519
+    key encoding (publicKeyMultibase/Multikey, publicKeyJwk/JsonWebKey2020
+    OKP+Ed25519, or the legacy publicKeyBase58/Ed25519VerificationKey2018
+    form). The scheme is hardcoded to HTTPS (see https_fetch.https_get) so no
+    attacker-controlled issuer string can make this resolver speak plaintext
+    HTTP, and redirects are never followed, so a compromised host can't
+    downgrade a resolution via a 3xx Location header.
 
-    Returns the FIRST verificationMethod entry that decodes to a supported
-    Ed25519 key -- does not implement purpose-based selection
-    (assertionMethod/authentication references). A document with multiple
-    keys for different purposes is out of scope for this version; see
-    docs/DESIGN.md.
+    Key selection is purpose-bound, not array-order-bound: the document's `id`
+    must equal the requested DID, a candidate verificationMethod's `controller`
+    must equal that DID, and when the document declares `assertionMethod` only
+    the referenced method(s) are eligible. A document with more than one
+    eligible Ed25519 key and no single assertionMethod reference is rejected as
+    ambiguous rather than resolved by array position. See docs/DESIGN.md.
+
+    Failure reasons that flow to a caller are generic for network errors: no
+    attacker-controlled issuer string or remote response text is embedded in
+    the exception message.
 
     No caching: every resolve() call is a fresh HTTPS fetch. A caching
     wrapper can be layered on top of this Protocol implementation without
@@ -99,8 +115,17 @@ class DidWebResolver:
             host, port, path = _parse_did_web_issuer(issuer)
             document = _fetch_did_document(host, port, path, self._timeout_seconds)
             return _extract_ed25519_public_key(document, issuer)
-        except (ValueError, TypeError, OSError) as err:
-            raise UnresolvableIssuer(f"did:web resolution failed for {issuer!r}: {err}") from err
+        except (ValueError, TypeError) as err:
+            # Errors from this package's own parsing/selection logic carry
+            # static, non-sensitive messages (no issuer/host/remote text).
+            raise UnresolvableIssuer(f"did:web resolution failed: {err}") from err
+        except (OSError, http.client.HTTPException) as err:
+            # Network-layer errors may carry a hostname or remote text (e.g. a
+            # TLS mismatch names the host); surface only a generic reason. The
+            # http.client.HTTPException catch is load-bearing: BadStatusLine
+            # from a malformed response line is NOT an OSError subclass and
+            # would otherwise escape this fail-closed boundary.
+            raise UnresolvableIssuer("did:web resolution failed: network error") from err
 
 
 def _parse_did_web_issuer(issuer: str) -> tuple[str, int | None, str]:
@@ -138,23 +163,72 @@ def _fetch_did_document(host: str, port: int | None, path: str, timeout_seconds:
     try:
         document = json.loads(body)
     except json.JSONDecodeError as err:
-        raise ValueError(f"did:web document is not valid JSON: {err}") from err
+        # Do not embed the decoder message: it can echo a snippet of the
+        # attacker-controlled remote body.
+        raise ValueError("did:web document is not valid JSON") from err
     if not isinstance(document, dict):
         raise ValueError("did:web document is not a JSON object")
     return document
 
 
 def _extract_ed25519_public_key(document: dict[str, Any], issuer: str) -> Ed25519PublicKey:
+    expected_did = f"did:web:{issuer}"
+    if document.get("id") != expected_did:
+        raise ValueError("did:web document id does not match the requested DID")
+
     methods = document.get("verificationMethod")
     if not isinstance(methods, list) or not methods:
-        raise ValueError(f"did:web document for {issuer!r} has no verificationMethod entries")
-    for method in methods:
+        raise ValueError("did:web document has no verificationMethod entries")
+    if len(methods) > _MAX_VERIFICATION_METHODS:
+        raise ValueError("did:web document has too many verificationMethod entries")
+
+    eligible = _eligible_methods(document, methods, expected_did)
+
+    keys: list[Ed25519PublicKey] = []
+    for method in eligible:
         if not isinstance(method, dict):
+            continue
+        if method.get("controller") != expected_did:
             continue
         key = _ed25519_key_from_verification_method(method)
         if key is not None:
-            return key
-    raise ValueError(f"did:web document for {issuer!r} has no verificationMethod encoding a supported Ed25519 key")
+            keys.append(key)
+
+    if not keys:
+        raise ValueError("did:web document has no verificationMethod encoding a supported Ed25519 key")
+    if len(keys) > 1:
+        raise ValueError("did:web document is ambiguous: multiple eligible Ed25519 keys, no single assertionMethod")
+    return keys[0]
+
+
+def _eligible_methods(document: dict[str, Any], methods: list[Any], expected_did: str) -> list[Any]:
+    """Return the verificationMethods eligible to sign a Grant. When the
+    document declares `assertionMethod`, only the referenced methods are
+    eligible (a reference is either a fragment id matching a verificationMethod
+    `id`, or an embedded method object). When it declares none, every
+    verificationMethod is eligible and the caller rejects >1 decodable key as
+    ambiguous."""
+    assertion = document.get("assertionMethod")
+    if assertion is None:
+        return methods
+    if not isinstance(assertion, list) or not assertion:
+        raise ValueError("did:web document has a malformed assertionMethod")
+
+    by_id: dict[str, Any] = {
+        method["id"]: method for method in methods if isinstance(method, dict) and isinstance(method.get("id"), str)
+    }
+    selected: list[Any] = []
+    for reference in assertion:
+        if isinstance(reference, str):
+            method = by_id.get(reference)
+            if method is None:
+                raise ValueError("did:web assertionMethod references an unknown verificationMethod")
+            selected.append(method)
+        elif isinstance(reference, dict):
+            selected.append(reference)
+        else:
+            raise ValueError("did:web assertionMethod entry is neither a reference nor an embedded method")
+    return selected
 
 
 def _ed25519_key_from_verification_method(method: dict[str, Any]) -> Ed25519PublicKey | None:
@@ -172,6 +246,8 @@ def _ed25519_key_from_verification_method(method: dict[str, Any]) -> Ed25519Publ
 def _ed25519_key_from_multibase(encoded: Any) -> Ed25519PublicKey | None:
     if not isinstance(encoded, str) or not encoded.startswith("z"):
         return None
+    if len(encoded) > _MAX_ENCODED_KEY_CHARS:
+        return None
     try:
         decoded = _base58_decode(encoded[1:])
     except ValueError:
@@ -187,6 +263,8 @@ def _ed25519_key_from_jwk(jwk: Any) -> Ed25519PublicKey | None:
     x = jwk.get("x")
     if not isinstance(x, str):
         return None
+    if len(x) > _MAX_ENCODED_KEY_CHARS:
+        return None
     try:
         raw = base64.urlsafe_b64decode(x + "=" * (-len(x) % 4))
     except (binascii.Error, ValueError):
@@ -198,6 +276,8 @@ def _ed25519_key_from_jwk(jwk: Any) -> Ed25519PublicKey | None:
 
 def _ed25519_key_from_base58(encoded: Any) -> Ed25519PublicKey | None:
     if not isinstance(encoded, str):
+        return None
+    if len(encoded) > _MAX_ENCODED_KEY_CHARS:
         return None
     try:
         raw = _base58_decode(encoded)
@@ -218,6 +298,10 @@ def _build_ed25519_public_key(raw: bytes) -> Ed25519PublicKey | None:
 def _base58_decode(value: str) -> bytes:
     if not value:
         raise ValueError("empty base58 string")
+    if len(value) > _MAX_ENCODED_KEY_CHARS:
+        # Hard bound so no caller can drive the O(n^2) big-int accumulation
+        # below with an over-long attacker-controlled string.
+        raise ValueError("base58 string exceeds the maximum key length")
     num = 0
     for char in value:
         digit = _BASE58_ALPHABET.find(char)

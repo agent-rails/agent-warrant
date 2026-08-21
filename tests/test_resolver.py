@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 
 import pytest
 
 from agent_warrant.exceptions import UnresolvableIssuer
 from agent_warrant.identity import generate_keypair
-from agent_warrant.resolver import DidWebResolver, PinnedResolver, _parse_did_web_issuer
+from agent_warrant.resolver import DidWebResolver, PinnedResolver, _base58_decode, _parse_did_web_issuer
 
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
@@ -30,8 +31,8 @@ def _multibase_key(raw_public_key: bytes) -> str:
     return "z" + _base58_encode(prefix + raw_public_key)
 
 
-def _did_document(verification_methods: list[dict]) -> bytes:
-    return json.dumps({"id": "did:web:example.com", "verificationMethod": verification_methods}).encode()
+def _did_document(verification_methods: list[dict], did: str = "did:web:example.com") -> bytes:
+    return json.dumps({"id": did, "verificationMethod": verification_methods}).encode()
 
 
 def test_pinned_resolver_resolves_known_issuer():
@@ -163,7 +164,8 @@ def test_did_web_resolver_uses_first_matching_method_and_passes_correct_url(monk
                 "controller": "did:web:example.com:agents:team-a",
                 "publicKeyMultibase": _multibase_key(raw_public),
             }
-        ]
+        ],
+        did="did:web:example.com:agents:team-a",
     )
     captured = {}
 
@@ -190,7 +192,7 @@ def test_did_web_resolver_fails_closed_on_fetch_failure(monkeypatch):
 
     monkeypatch.setattr("agent_warrant.resolver.https_get", _boom)
     resolver = DidWebResolver()
-    with pytest.raises(UnresolvableIssuer, match="connection refused"):
+    with pytest.raises(UnresolvableIssuer, match="network error"):
         resolver.resolve("example.com")
 
 
@@ -319,3 +321,154 @@ def test_did_web_resolver_skips_non_matching_and_finds_valid_entry(monkeypatch):
     resolver = DidWebResolver()
     resolved = resolver.resolve("example.com")
     assert resolved.public_bytes_raw() == raw_public
+
+
+# --- algorithmic-complexity DoS: over-long key fields rejected before decode ---
+
+
+def test_base58_decode_rejects_over_long_input():
+    with pytest.raises(ValueError, match="maximum key length"):
+        _base58_decode("1" * 70_000)
+
+
+def test_did_web_resolver_rejects_huge_multibase_field_fast(monkeypatch):
+    # A 65KB publicKeyMultibase would drive an O(n^2) big-int accumulation
+    # before any length check in the pre-fix code. It must now fail closed via
+    # the length guard, never reaching the decoder.
+    document = _did_document(
+        [
+            {
+                "id": "did:web:example.com#key-1",
+                "type": "Multikey",
+                "controller": "did:web:example.com",
+                "publicKeyMultibase": "z" + "1" * 65_000,
+            }
+        ]
+    )
+    monkeypatch.setattr("agent_warrant.resolver.https_get", lambda *a, **k: document)
+    resolver = DidWebResolver()
+    with pytest.raises(UnresolvableIssuer, match="no verificationMethod encoding"):
+        resolver.resolve("example.com")
+
+
+def test_did_web_resolver_rejects_too_many_verification_methods(monkeypatch):
+    methods = [
+        {"id": f"did:web:example.com#k{i}", "type": "Multikey", "controller": "did:web:example.com"}
+        for i in range(1000)
+    ]
+    monkeypatch.setattr("agent_warrant.resolver.https_get", lambda *a, **k: _did_document(methods))
+    resolver = DidWebResolver()
+    with pytest.raises(UnresolvableIssuer, match="too many verificationMethod"):
+        resolver.resolve("example.com")
+
+
+# --- http.client.HTTPException must fail closed (not escape resolve()) ---
+
+
+def test_did_web_resolver_fails_closed_on_http_exception(monkeypatch):
+    # BadStatusLine (a malformed HTTP status line) is an http.client.HTTPException,
+    # NOT an OSError subclass -- pre-fix it escaped resolve()'s catch and broke the
+    # "every failure fails closed as UnresolvableIssuer" contract.
+    def _bad_status_line(*a, **k):
+        raise http.client.BadStatusLine("\x00 not a status line \xff")
+
+    monkeypatch.setattr("agent_warrant.resolver.https_get", _bad_status_line)
+    resolver = DidWebResolver()
+    with pytest.raises(UnresolvableIssuer, match="network error"):
+        resolver.resolve("example.com")
+
+
+# --- key-confusion: id / controller / assertionMethod binding ---
+
+
+def test_did_web_resolver_rejects_document_id_mismatch(monkeypatch):
+    private_key = generate_keypair()
+    raw_public = private_key.public_key().public_bytes_raw()
+    document = _did_document(
+        [
+            {
+                "id": "did:web:evil.example#key-1",
+                "type": "Ed25519VerificationKey2020",
+                "controller": "did:web:evil.example",
+                "publicKeyMultibase": _multibase_key(raw_public),
+            }
+        ],
+        did="did:web:evil.example",
+    )
+    monkeypatch.setattr("agent_warrant.resolver.https_get", lambda *a, **k: document)
+    resolver = DidWebResolver()
+    with pytest.raises(UnresolvableIssuer, match="id does not match"):
+        resolver.resolve("example.com")
+
+
+def test_did_web_resolver_rejects_wrong_controller(monkeypatch):
+    private_key = generate_keypair()
+    raw_public = private_key.public_key().public_bytes_raw()
+    document = _did_document(
+        [
+            {
+                "id": "did:web:example.com#key-1",
+                "type": "Ed25519VerificationKey2020",
+                "controller": "did:web:attacker.example",
+                "publicKeyMultibase": _multibase_key(raw_public),
+            }
+        ]
+    )
+    monkeypatch.setattr("agent_warrant.resolver.https_get", lambda *a, **k: document)
+    resolver = DidWebResolver()
+    with pytest.raises(UnresolvableIssuer, match="no verificationMethod encoding"):
+        resolver.resolve("example.com")
+
+
+def test_did_web_resolver_honors_assertion_method_reference_not_array_order(monkeypatch):
+    # Two valid Ed25519 keys; assertionMethod names the SECOND. Array-order
+    # selection would pick the first (wrong) key -- a key-confusion elevation.
+    wrong_key = generate_keypair().public_key().public_bytes_raw()
+    right_key = generate_keypair().public_key().public_bytes_raw()
+    document = _did_document(
+        [
+            {
+                "id": "did:web:example.com#key-1",
+                "type": "Ed25519VerificationKey2020",
+                "controller": "did:web:example.com",
+                "publicKeyMultibase": _multibase_key(wrong_key),
+            },
+            {
+                "id": "did:web:example.com#key-2",
+                "type": "Ed25519VerificationKey2020",
+                "controller": "did:web:example.com",
+                "publicKeyMultibase": _multibase_key(right_key),
+            },
+        ]
+    )
+    document_dict = json.loads(document)
+    document_dict["assertionMethod"] = ["did:web:example.com#key-2"]
+    monkeypatch.setattr("agent_warrant.resolver.https_get", lambda *a, **k: json.dumps(document_dict).encode())
+    resolver = DidWebResolver()
+    resolved = resolver.resolve("example.com")
+    assert resolved.public_bytes_raw() == right_key
+
+
+def test_did_web_resolver_rejects_ambiguous_multiple_keys_without_assertion_method(monkeypatch):
+    key_a = generate_keypair().public_key().public_bytes_raw()
+    key_b = generate_keypair().public_key().public_bytes_raw()
+    document = _did_document(
+        [
+            {
+                "id": "did:web:example.com#key-1",
+                "type": "Ed25519VerificationKey2020",
+                "controller": "did:web:example.com",
+                "publicKeyMultibase": _multibase_key(key_a),
+            },
+            {
+                "id": "did:web:example.com#key-2",
+                "type": "Ed25519VerificationKey2020",
+                "controller": "did:web:example.com",
+                "publicKeyMultibase": _multibase_key(key_b),
+            },
+        ]
+    )
+    monkeypatch.setattr("agent_warrant.resolver.https_get", lambda *a, **k: document)
+    resolver = DidWebResolver()
+    with pytest.raises(UnresolvableIssuer, match="ambiguous"):
+        resolver.resolve("example.com")
