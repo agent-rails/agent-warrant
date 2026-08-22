@@ -4,7 +4,7 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
-Initial implementation: `Grant`, `PossessionProof`, `sign()`/`prove()`/`verify()`, `Issuer`/`Verifier`/`HolderKeypair`, `IssuerResolver`/`PinnedResolver`, JCS-style canonicalization. Went through two pre-code adversarial review cycles before any code was written -- see docs/DESIGN.md for the design history, including two real corrections (holder-binding was initially a no-op, and a canonicalization-drift bug was reintroduced inside the fix for that gap and caught in the second pass).
+Initial implementation: `Grant`, `PossessionProof`, `sign()`/`prove()`/`verify()`, `Issuer`/`Verifier`/`HolderKeypair`, `IssuerResolver`/`PinnedResolver`, JCS-style canonicalization. See docs/DESIGN.md for the design history, including two corrections: holder-binding was initially a no-op, and a canonicalization-drift bug was reintroduced inside the fix for that gap.
 
 Added `DidWebResolver`: real trust bootstrap via HTTPS + domain ownership, implementing the did:web method spec directly (Multikey/`publicKeyMultibase`, `JsonWebKey2020`/`publicKeyJwk`, and legacy `publicKeyBase58` Ed25519 key extraction). Fails closed on every malformed-input/network/document class of failure. Shares a new `https_fetch.py` module with the revocation checker below, which rejects resolution to private/loopback/link-local/reserved/multicast addresses before connecting (SSRF hardening for a pre-authentication network surface -- see docs/THREAT_MODEL.md).
 
