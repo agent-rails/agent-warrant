@@ -373,3 +373,36 @@ def test_all_printable_ascii_ids_are_accepted(issuer_key):
     printable = "".join(chr(code) for code in range(0x21, 0x7F))
     root = make_root(issuer_key, task_id=printable, purpose=printable)
     assert TaskRoot.decode(root.encode()) == root
+
+
+def reencoded(issuer_key, fields, body):
+    signature = issuer_key.sign(signing_input("task-root", 1, fields))
+    return f"{b64u(body)}.{b64u(signature)}"
+
+
+def test_reordered_keys_are_refused_even_with_a_valid_signature(issuer_key, resolver):
+    fields = make_fields()
+    body = json.dumps(fields, separators=(",", ":")).encode()
+    assert body != canonicalize(fields)
+    result = verify_root(reencoded(issuer_key, fields, body), resolver, POLICY, FakeRevocation(), NOW)
+    assert (result.valid, result.reason) == (False, "malformed task root: body is not in canonical form")
+
+
+def test_whitespace_in_body_is_refused(issuer_key, resolver):
+    fields = make_fields()
+    body = json.dumps(fields, sort_keys=True).encode()
+    result = verify_root(reencoded(issuer_key, fields, body), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.reason == "malformed task root: body is not in canonical form"
+
+
+def test_escaped_characters_are_refused(issuer_key, resolver):
+    fields = make_fields()
+    body = canonicalize(fields).replace(b'"alice"', b'"\\u0061lice"')
+    result = verify_root(reencoded(issuer_key, fields, body), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.reason == "malformed task root: body is not in canonical form"
+
+
+def test_exactly_one_encoding_verifies(issuer_key, resolver):
+    root = make_root(issuer_key)
+    assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW).valid is True
+    assert TaskRoot.decode(root.encode()).encode() == root.encode()
