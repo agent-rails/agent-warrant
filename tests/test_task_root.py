@@ -17,11 +17,15 @@ from agent_warrant.task_root import (
     issue_task_root,
     verify_root,
 )
-from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy
+from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 NOW = 1_000_000
 POLICY = IssuerTrustPolicy(
-    {"issuer-a": IssuerAllowance(tenants={"tenant-1"}, principals={"alice"}, max_budget=100, max_depth=3)}
+    {
+        "issuer-a": IssuerAllowance(
+            tenants={"tenant-1": TenantAllowance(principals={"alice"})}, max_budget=100, max_depth=3
+        )
+    }
 )
 
 
@@ -288,7 +292,7 @@ def test_boundary_values_accepted(issuer_key, resolver):
     wide = IssuerTrustPolicy(
         {
             "issuer-a": IssuerAllowance(
-                tenants={"tenant-1"}, principals={"alice"}, max_budget=0, max_depth=MAX_CHAIN_DEPTH
+                tenants={"tenant-1": TenantAllowance(principals={"alice"})}, max_budget=0, max_depth=MAX_CHAIN_DEPTH
             )
         }
     )
@@ -329,3 +333,94 @@ def test_scope_is_covered_by_the_signature(issuer_key, resolver):
 def test_scope_round_trips(issuer_key):
     root = make_root(issuer_key)
     assert TaskRoot.decode(root.encode()).scope == root.scope
+
+
+WEAK_SUBJECTS = {
+    "identity": bytes([1]) + bytes(31),
+    "order-2": (2**255 - 20).to_bytes(32, "little"),
+    "order-4": bytes(32),
+    "order-8": bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+    "y-equals-p-plus-1": (2**255 - 18).to_bytes(32, "little"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_SUBJECTS))
+def test_issue_refuses_weak_subject_keys(issuer_key, name):
+    with pytest.raises(ValueError, match="subject is not a canonical"):
+        make_root(issuer_key, subject=b64u(WEAK_SUBJECTS[name]))
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_SUBJECTS))
+def test_verify_refuses_signed_root_with_weak_subject(issuer_key, resolver, name):
+    fields = make_fields(subject=b64u(WEAK_SUBJECTS[name]))
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.valid is False
+    assert "subject is not a canonical" in result.reason
+
+
+BAD_IDS = {
+    "space": "svc: a",
+    "tab": "a\tb",
+    "newline": "a\nb",
+    "nul": "a\x00b",
+    "del": "a\x7fb",
+    "bidi-override": "svc:team-a\u202eadmin",
+    "zero-width-space": "a\u200bb",
+    "non-ascii": "caf\u00e9",
+    "leading-space": " a",
+    "trailing-space": "a ",
+}
+
+
+@pytest.mark.parametrize("field", ["task_id", "tenant_id", "principal", "purpose", "issuer"])
+@pytest.mark.parametrize("name", sorted(BAD_IDS))
+def test_issue_refuses_non_printable_or_non_ascii_ids(issuer_key, field, name):
+    with pytest.raises(ValueError, match=f"{field} must be ASCII printable"):
+        make_root(issuer_key, **{field: BAD_IDS[name]})
+
+
+@pytest.mark.parametrize("field", ["task_id", "tenant_id", "principal", "purpose", "issuer"])
+def test_verify_refuses_signed_root_with_bad_id(issuer_key, resolver, field):
+    fields = make_fields(**{field: "a\x00b"})
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.valid is False
+    assert f"{field} must be ASCII printable" in result.reason
+
+
+def test_all_printable_ascii_ids_are_accepted(issuer_key):
+    printable = "".join(chr(code) for code in range(0x21, 0x7F))
+    root = make_root(issuer_key, task_id=printable, purpose=printable)
+    assert TaskRoot.decode(root.encode()) == root
+
+
+def reencoded(issuer_key, fields, body):
+    signature = issuer_key.sign(signing_input("task-root", 1, fields))
+    return f"{b64u(body)}.{b64u(signature)}"
+
+
+def test_reordered_keys_are_refused_even_with_a_valid_signature(issuer_key, resolver):
+    fields = make_fields()
+    body = json.dumps(fields, separators=(",", ":")).encode()
+    assert body != canonicalize(fields)
+    result = verify_root(reencoded(issuer_key, fields, body), resolver, POLICY, FakeRevocation(), NOW)
+    assert (result.valid, result.reason) == (False, "malformed task root: body is not in canonical form")
+
+
+def test_whitespace_in_body_is_refused(issuer_key, resolver):
+    fields = make_fields()
+    body = json.dumps(fields, sort_keys=True).encode()
+    result = verify_root(reencoded(issuer_key, fields, body), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.reason == "malformed task root: body is not in canonical form"
+
+
+def test_escaped_characters_are_refused(issuer_key, resolver):
+    fields = make_fields()
+    body = canonicalize(fields).replace(b'"alice"', b'"\\u0061lice"')
+    result = verify_root(reencoded(issuer_key, fields, body), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.reason == "malformed task root: body is not in canonical form"
+
+
+def test_exactly_one_encoding_verifies(issuer_key, resolver):
+    root = make_root(issuer_key)
+    assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW).valid is True
+    assert TaskRoot.decode(root.encode()).encode() == root.encode()

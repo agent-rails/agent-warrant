@@ -6,13 +6,20 @@
   },
   "policy": {
     "issuer-a": {
-      "tenants": [
-        "tenant-1"
-      ],
-      "principals": [],
-      "principal_prefixes": [
-        "svc:"
-      ],
+      "tenants": {
+        "tenant-1": {
+          "principals": [],
+          "principal_prefixes": [
+            "svc:"
+          ]
+        },
+        "tenant-3": {
+          "principals": [
+            "alice"
+          ],
+          "principal_prefixes": []
+        }
+      },
       "max_budget": 100,
       "max_depth": 3
     }
@@ -239,6 +246,158 @@
       "revoked": false,
       "expect_valid": false,
       "reason": "lifetime must not exceed"
+    },
+    {
+      "name": "subject-identity-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJBUUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.ZzvGtjH5zkP-aC_8kGd21HBLUMffl2dXspd6aM871HCZc65-rOTAcFVIFoURZ0AgrMN-asn6zJjMF1vCkar_Cg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-2-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiI3UF9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.6cQNtYBQFHoarvIYYdxzra9s9XhTcoj6JW0w3Ll-7lI5b4FTCx8glPjqh7LFxuBo0jt-EGAZDil3XHbHnA9PBA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-4-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.hoAQPD5yXcaqErBm9DkWvBuezSRorPx8yT99IIfv-EpQZvYSTSlWKX0k91wtBFLD55aEWpjJQvCbyGy3pYrxAA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-4-point-sign-bit",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUlBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.0y0vBwNleqzLN7jw8FEEQUBKaRMckTymFnsoPR_8xonNsR0vKRpc46SWBxBPDRpc6r7jlapEeAPwecN5-dmYBA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-8-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJKdWlWajhLeUo3QkZ3X1NKOHUtWThOWGZyQVhUeGpNNXNUZ0NpRzFUX0FVIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.5Dtyqiqhd5GtyPjtmuYWHvbemGIzaIgbfUW97fWqAtQW4SY5lGw6SSC7CHNSP9BOHmcysP7rLxT1MhZg8gfcCg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-8-point-sign-flipped",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJKdWlWajhLeUo3QkZ3X1NKOHUtWThOWGZyQVhUeGpNNXNUZ0NpRzFUX0lVIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.-d8dtblquuyRyms3ORosO681YWhze71rrQDgY_nzT3y7lZwD5vGXBonXTLGQEMv8cziN-R3G1BpSya_BmlWrBA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-y-equals-p-plus-1",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiI3dl9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.rlPjWVZ6nh1DxosDsP2XEY0RVFG7XYWqBEsJZFMvIPGRWkLbrjwB_OG8Poq1u-2D9kmg_ltIVo1FVGoiKb4wAg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-y-equals-p",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiI3Zl9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.9xaZOpRL0w-c5J-KjHSo7hQcmLw0kGBrSDlW33Ld4CHSjGTlUSR0xO0SmcqA8AhroOyPh_MgUtDtFLq51i3qCA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "tenant-bound-principal-valid",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTMifQ.rd4HJN-DTcRBrXFvRgzAw-WC9Hr72oXTYoBTZWtoHbuWULy_LeuSXACSjWX4pCqiHw_Uq9Bj94Tei-lagoytAQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "principal-of-another-tenant",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0zIn0.LIrLnyWyYV9r4_uyBwXz3exwuJ41kytjcHzI1VdHJQai1KWnLMAeD208oXLHZvn-25kJka5oNOwKtAyVkP86CA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal 'svc:deployer' for tenant 'tenant-3'"
+    },
+    {
+      "name": "principal-of-another-tenant-reverse",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.muQhr3aMwHsi65caRHR20DIzYFTk6Y-0nb90i0zke_YMqflyEHLTSj4r8iiijIPwekarcOOtm21ba_q2YfmwDQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal 'alice' for tenant 'tenant-1'"
+    },
+    {
+      "name": "prefix-sibling-segment",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjLWFkbWluIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.MNZQ41NWWA9sbVjlkKQlopaRx4H4L9W24m_V9oO_GHn9im6qMQdJTDK03v-hDM4Glu-5VrV461a95t71IfEnAQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal 'svc-admin'"
+    },
+    {
+      "name": "principal-nul-character",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOnRlYW1cdTAwMDB4IiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.b3QfepILStVrQXTkFWQK51JQYSbIPnuzSt4yZZbU5J1TtRIqEj0Gl0vc5U2aEp3hj_X1-x5b1QjATSodwempDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "principal-bidi-override",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOnRlYW3igK54IiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.HVSGG1NQ4rNIvioHLo5jGS4m7qjPtfstIKfxAJotkm81HEydT6wlf0ak4nvZKzilfgh3qauIwU7yf7gc3htuCA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "principal-with-space",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOiB4IiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.bkBjF7v_rpmiQdmlFG8q8rO3wjRO16Tt0tBVbV3Akd3uOIKX3ZzpNLhouxW_AUN032ljK33Kew_obvbn8ZDHCg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "principal-non-ascii",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmNhZsOpIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.VAsgM61QLT2N06PEzvs93TKo2E8lwANY-IYCJrP5823L4QwbIKMKmZqU8itcIL5jPMZoq_1sM0HuvFSCTaQLCA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "non-canonical-key-order",
+      "encoded": "eyJpc3N1ZXIiOiJpc3N1ZXItYSIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSIsInByaW5jaXBhbCI6InN2YzpkZXBsb3llciIsInB1cnBvc2UiOiJkZXBsb3kiLCJidWRnZXQiOjEwMCwibWF4X2RlcHRoIjozLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImV4cGlyZXNfYXQiOjEwMDAzMDAsInNjb3BlIjp7InRvb2xzIjpbImRlcGxveS4qIl0sInJlc291cmNlcyI6WyJlbnYvKiJdLCJtYXhfY29zdF9wZXJfY2FsbCI6NX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "body is not in canonical form"
+    },
+    {
+      "name": "non-canonical-whitespace",
+      "encoded": "eyJidWRnZXQiOiAxMDAsICJleHBpcmVzX2F0IjogMTAwMDMwMCwgImlzc3VlZF9hdCI6IDEwMDAwMDAsICJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAibWF4X2RlcHRoIjogMywgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAic2NvcGUiOiB7Im1heF9jb3N0X3Blcl9jYWxsIjogNSwgInJlc291cmNlcyI6IFsiZW52LyoiXSwgInRvb2xzIjogWyJkZXBsb3kuKiJdfSwgInN1YmplY3QiOiAiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsICJ0YXNrX2lkIjogInRhc2stMSIsICJ0ZW5hbnRfaWQiOiAidGVuYW50LTEifQ.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "body is not in canonical form"
+    },
+    {
+      "name": "non-canonical-escape",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6Ilx1MDA2NGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "body is not in canonical form"
     }
   ]
 }

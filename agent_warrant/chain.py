@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
-from .identity import decode_public_key, encode_public_key, is_canonical_public_key
+from .identity import decode_public_key, encode_public_key, is_valid_public_key
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
 from .scope import scope_narrows, validate_scope
@@ -105,7 +105,7 @@ def _validate_link_fields(fields: dict[str, Any]) -> None:
         if not _is_binding(fields[name]):
             raise ValueError(f"{name} is not a canonical base64url sha256 digest")
     for name in _LINK_KEY_FIELDS:
-        if not is_canonical_public_key(fields[name]):
+        if not is_valid_public_key(fields[name]):
             raise ValueError(f"{name} is not a canonical base64url Ed25519 public key")
     for name in _LINK_INTEGER_FIELDS:
         value = fields[name]

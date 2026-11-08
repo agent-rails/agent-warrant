@@ -17,12 +17,18 @@ from agent_warrant.encoding import b64u
 from agent_warrant.identity import encode_public_key, generate_keypair
 from agent_warrant.resolver import PinnedResolver
 from agent_warrant.task_root import issue_task_root
-from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy
+from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 NOW = 1_000_000
 SCOPE = {"tools": ["deploy.*", "read"], "resources": ["env/*"], "max_cost_per_call": 5}
 POLICY = IssuerTrustPolicy(
-    {"issuer-a": IssuerAllowance(tenants={"t1", "t2"}, principals={"alice"}, max_budget=1000, max_depth=16)}
+    {
+        "issuer-a": IssuerAllowance(
+            tenants={"t1": TenantAllowance(principals={"alice"}), "t2": TenantAllowance(principals={"alice"})},
+            max_budget=1000,
+            max_depth=16,
+        )
+    }
 )
 
 

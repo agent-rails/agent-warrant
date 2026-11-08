@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
-from .identity import is_canonical_public_key
+from .identity import is_valid_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
@@ -25,7 +25,8 @@ MAX_CHAIN_DEPTH = 16
 MAX_TTL = int(MAX_TTL_SECONDS)
 CLOCK_SKEW_SECONDS = 5
 
-_STRING_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer", "subject")
+_ID_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer")
+_STRING_FIELDS = _ID_FIELDS + ("subject",)
 _INTEGER_FIELDS = ("budget", "max_depth", "issued_at", "expires_at")
 _BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS + ("scope",)
 
@@ -74,16 +75,20 @@ class TaskRoot:
             raise ValueError(f"malformed task root: {err}") from None
         fields = strict_decode(body, required=_BODY_FIELDS, integer_fields=_INTEGER_FIELDS)
         _validate_fields(fields)
+        if canonicalize(fields) != body:
+            raise ValueError("body is not in canonical form")
         return cls(**fields, proof=proof)
 
 
 def _validate_fields(fields: dict[str, Any]) -> None:
-    for name in _STRING_FIELDS:
+    for name in _ID_FIELDS:
         value = fields[name]
         if not isinstance(value, str) or not value:
             raise ValueError(f"{name} must be a non-empty string")
         if len(value) > MAX_FIELD_CHARACTERS:
             raise ValueError(f"{name} is longer than {MAX_FIELD_CHARACTERS} characters")
+        if not all("!" <= character <= "~" for character in value):
+            raise ValueError(f"{name} must be ASCII printable without whitespace or control characters")
     for name in _INTEGER_FIELDS:
         value = fields[name]
         if isinstance(value, bool) or not isinstance(value, int):
@@ -99,8 +104,8 @@ def _validate_fields(fields: dict[str, Any]) -> None:
         raise ValueError("expires_at must be after issued_at")
     if fields["expires_at"] - fields["issued_at"] > MAX_TTL:
         raise ValueError(f"lifetime must not exceed {MAX_TTL} seconds")
-    if not is_canonical_public_key(fields["subject"]):
-        raise ValueError("subject is not a canonical base64url Ed25519 public key")
+    if not is_valid_public_key(fields["subject"]):
+        raise ValueError("subject is not a canonical base64url Ed25519 public key of full order")
 
 
 def issue_task_root(
