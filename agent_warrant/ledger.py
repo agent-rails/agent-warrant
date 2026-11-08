@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
-from .chain import ChainContext
-from .encoding import b64u_decode
+from .canonical import MAX_SAFE_INTEGER, signing_input
+from .chain import ChainContext, ChainLink
+from .encoding import b64u_decode, sha256_b64u
 from .exceptions import RevocationSourceUnreachable
+from .scope import validate_entry
 from .task_root import TaskRootResult
 
 SCHEMA_VERSION = 1
+OPERATION_TYPE = "operation"
+OPERATION_VERSION = 1
+STATES = ("reserved", "issued", "done", "outcome_unknown", "released")
 BUSY_TIMEOUT_SECONDS = 30
 
 _SCHEMA = """
@@ -37,6 +43,39 @@ CREATE TABLE IF NOT EXISTS revoked_tasks (
 CREATE TABLE IF NOT EXISTS revoked_tenants (
     tenant_id TEXT PRIMARY KEY,
     revoked_at INTEGER NOT NULL
+);
+"""
+
+_RESERVATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS links (
+    binding TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    cap INTEGER NOT NULL CHECK (cap >= 0),
+    spent INTEGER NOT NULL DEFAULT 0 CHECK (spent >= 0 AND spent <= cap),
+    FOREIGN KEY (tenant_id, task_id) REFERENCES tasks (tenant_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS reservations (
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    op_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    leaf_binding TEXT NOT NULL,
+    cost INTEGER NOT NULL CHECK (cost >= 0),
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'issued', 'done', 'outcome_unknown', 'released')),
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, task_id, op_id),
+    FOREIGN KEY (tenant_id, task_id) REFERENCES tasks (tenant_id, task_id)
+);
+CREATE TABLE IF NOT EXISTS reservation_links (
+    tenant_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    op_id TEXT NOT NULL,
+    binding TEXT NOT NULL REFERENCES links (binding),
+    PRIMARY KEY (tenant_id, task_id, op_id, binding),
+    FOREIGN KEY (tenant_id, task_id, op_id) REFERENCES reservations (tenant_id, task_id, op_id)
 );
 """
 
@@ -77,6 +116,90 @@ def _check_now(now: object) -> int:
     return now
 
 
+@dataclass(frozen=True)
+class Operation:
+    """One effect the trusted executor wants to perform, built by the executor only.
+    `op_id` is the idempotency key, unique per (tenant_id, task_id). `leaf_binding`
+    is the binding of the chain's last record (the TaskRoot when there are no links).
+    `cost` comes from a policy-owned cost schedule. `digest()` covers every field, so
+    a replayed op_id is recognised only when the whole operation is identical."""
+
+    op_id: str
+    tenant_id: str
+    task_id: str
+    leaf_binding: str
+    tool: str
+    resource: str
+    args_digest: str
+    cost: int
+    verdict_allowed: bool
+    expires_at: int
+
+    def signable_fields(self) -> dict[str, object]:
+        return {
+            "op_id": self.op_id,
+            "tenant_id": self.tenant_id,
+            "task_id": self.task_id,
+            "leaf_binding": self.leaf_binding,
+            "tool": self.tool,
+            "resource": self.resource,
+            "args_digest": self.args_digest,
+            "cost": self.cost,
+            "verdict_allowed": self.verdict_allowed,
+            "expires_at": self.expires_at,
+        }
+
+    def digest(self) -> str:
+        return sha256_b64u(signing_input(OPERATION_TYPE, OPERATION_VERSION, self.signable_fields()))
+
+    def refusal(self) -> str | None:
+        for name in ("op_id", "tenant_id", "task_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value or not all("!" <= character <= "~" for character in value):
+                return f"{name} must be a non-empty ASCII printable string without whitespace"
+        for name in ("tool", "resource"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or validate_entry(value) or "*" in value:
+                return f"{name} must be a concrete id"
+        for name in ("leaf_binding", "args_digest"):
+            try:
+                _check_binding(getattr(self, name))
+            except ValueError:
+                return f"{name} must be a canonical base64url sha256 digest"
+        if isinstance(self.cost, bool) or not isinstance(self.cost, int) or not 0 <= self.cost <= MAX_SAFE_INTEGER:
+            return f"cost must be an integer between 0 and {MAX_SAFE_INTEGER}"
+        if not isinstance(self.verdict_allowed, bool):
+            return "verdict_allowed must be a bool"
+        if (
+            isinstance(self.expires_at, bool)
+            or not isinstance(self.expires_at, int)
+            or not 0 <= self.expires_at <= MAX_SAFE_INTEGER
+        ):
+            return "expires_at must be a non-negative integer"
+        return None
+
+
+@dataclass(frozen=True)
+class Reservation:
+    tenant_id: str
+    task_id: str
+    op_id: str
+    digest: str
+    cost: int
+    state: str
+    expires_at: int
+
+
+@dataclass(frozen=True)
+class BudgetStatus:
+    budget: int
+    spent: int
+
+    @property
+    def remaining(self) -> int:
+        return self.budget - self.spent
+
+
 class TaskLedger:
     """Single-host SQLite ledger of task budgets and revocations. One connection per
     call, WAL journal, full synchronous commits, parameterized statements only.
@@ -93,7 +216,7 @@ class TaskLedger:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if version not in (0, SCHEMA_VERSION):
                     raise LedgerUnavailable(f"unsupported ledger schema version {version}")
-                for statement in _SCHEMA.split(";"):
+                for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
                     if statement.strip():
                         connection.execute(statement)
                 for table in _INSERT_ONLY_TABLES:
@@ -190,3 +313,209 @@ class TaskLedger:
                 return self._revoked(connection, context.tenant_id, context.task_id, bindings)
         except sqlite3.Error as err:
             raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
+
+    @staticmethod
+    def _release_expired(connection: sqlite3.Connection, tenant_id: str, task_id: str, now: int) -> None:
+        expired = connection.execute(
+            "SELECT op_id, cost FROM reservations "
+            "WHERE tenant_id = ? AND task_id = ? AND state = 'reserved' AND expires_at <= ?",
+            (tenant_id, task_id, now),
+        ).fetchall()
+        for op_id, cost in expired:
+            connection.execute(
+                "UPDATE tasks SET spent = spent - ? WHERE tenant_id = ? AND task_id = ?", (cost, tenant_id, task_id)
+            )
+            connection.execute(
+                "UPDATE links SET spent = spent - ? WHERE binding IN "
+                "(SELECT binding FROM reservation_links WHERE tenant_id = ? AND task_id = ? AND op_id = ?)",
+                (cost, tenant_id, task_id, op_id),
+            )
+            connection.execute(
+                "UPDATE reservations SET state = 'released', updated_at = ? "
+                "WHERE tenant_id = ? AND task_id = ? AND op_id = ?",
+                (now, tenant_id, task_id, op_id),
+            )
+
+    @staticmethod
+    def _read_reservation(
+        connection: sqlite3.Connection, tenant_id: str, task_id: str, op_id: str
+    ) -> Reservation | None:
+        row = connection.execute(
+            "SELECT digest, cost, state, expires_at FROM reservations "
+            "WHERE tenant_id = ? AND task_id = ? AND op_id = ?",
+            (tenant_id, task_id, op_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return Reservation(tenant_id, task_id, op_id, row[0], row[1], row[2], row[3])
+
+    def reserve(self, operation: Operation, links: Sequence[ChainLink], now: int) -> Reservation:
+        """Atomically reserve `operation.cost` against the task pool and every link's
+        cap, in one BEGIN IMMEDIATE transaction. `links` is the verified chain's links
+        in order (empty when the TaskRoot subject acts directly); each registers with
+        its budget as its cap on first use. Raises Refused, changing nothing, for: a
+        malformed operation, a non-allow verdict, an expired operation, an unknown or
+        revoked task, tenant, root or link, a chain that does not end at
+        `operation.leaf_binding`, a reused op_id with a different operation, or any
+        pool or cap that cannot cover the cost. The same (tenant, task, op_id) with an
+        identical operation returns the stored reservation in whatever state it is in."""
+        _check_now(now)
+        if not isinstance(operation, Operation):
+            raise Refused("malformed operation: not an Operation")
+        problem = operation.refusal()
+        if problem:
+            raise Refused(f"malformed operation: {problem}")
+        links = tuple(links)
+        for link in links:
+            if not isinstance(link, ChainLink):
+                raise Refused("links must be ChainLink records")
+            if (link.tenant_id, link.task_id) != (operation.tenant_id, operation.task_id):
+                raise Refused("a link belongs to a different tenant or task")
+        digest = operation.digest()
+        bindings = tuple(link.binding() for link in links)
+        with self._transaction() as connection:
+            self._release_expired(connection, operation.tenant_id, operation.task_id, now)
+            stored = self._read_reservation(connection, operation.tenant_id, operation.task_id, operation.op_id)
+            if stored is not None:
+                if stored.digest != digest:
+                    raise Refused("op_id was already used for a different operation")
+                return stored
+            if not operation.verdict_allowed:
+                raise Refused("operation verdict is not allow")
+            if now >= operation.expires_at:
+                raise Refused("operation has expired")
+            task = connection.execute(
+                "SELECT root_binding, budget, spent FROM tasks WHERE tenant_id = ? AND task_id = ?",
+                (operation.tenant_id, operation.task_id),
+            ).fetchone()
+            if task is None:
+                raise Refused("unknown task")
+            root_binding, budget, spent = task
+            expected_parent = root_binding
+            for link in links:
+                if link.parent_hash != expected_parent or link.task_root != root_binding:
+                    raise Refused("links do not form a chain from this task's root")
+                expected_parent = link.binding()
+            if expected_parent != operation.leaf_binding:
+                raise Refused("operation leaf_binding is not the end of the chain")
+            if self._revoked(connection, operation.tenant_id, operation.task_id, (root_binding, *bindings)):
+                raise Refused("task root, task, tenant or a link is revoked")
+            if spent + operation.cost > budget:
+                raise Refused(f"task budget exhausted: {budget - spent} remaining, cost {operation.cost}")
+            for link, binding in zip(links, bindings, strict=True):
+                connection.execute(
+                    "INSERT OR IGNORE INTO links (binding, tenant_id, task_id, cap) VALUES (?, ?, ?, ?)",
+                    (binding, link.tenant_id, link.task_id, link.budget),
+                )
+                cap, link_spent, link_tenant, link_task = connection.execute(
+                    "SELECT cap, spent, tenant_id, task_id FROM links WHERE binding = ?", (binding,)
+                ).fetchone()
+                if (link_tenant, link_task, cap) != (link.tenant_id, link.task_id, link.budget):
+                    raise Refused("link is registered with different terms")
+                if link_spent + operation.cost > cap:
+                    raise Refused(f"link budget exhausted: {cap - link_spent} remaining, cost {operation.cost}")
+            connection.execute(
+                "UPDATE tasks SET spent = spent + ? WHERE tenant_id = ? AND task_id = ?",
+                (operation.cost, operation.tenant_id, operation.task_id),
+            )
+            connection.execute(
+                "INSERT INTO reservations (tenant_id, task_id, op_id, digest, leaf_binding, cost, state, expires_at, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)",
+                (
+                    operation.tenant_id,
+                    operation.task_id,
+                    operation.op_id,
+                    digest,
+                    operation.leaf_binding,
+                    operation.cost,
+                    operation.expires_at,
+                    now,
+                    now,
+                ),
+            )
+            for binding in bindings:
+                connection.execute("UPDATE links SET spent = spent + ? WHERE binding = ?", (operation.cost, binding))
+                connection.execute(
+                    "INSERT INTO reservation_links (tenant_id, task_id, op_id, binding) VALUES (?, ?, ?, ?)",
+                    (operation.tenant_id, operation.task_id, operation.op_id, binding),
+                )
+            return Reservation(
+                operation.tenant_id,
+                operation.task_id,
+                operation.op_id,
+                digest,
+                operation.cost,
+                "reserved",
+                operation.expires_at,
+            )
+
+    def _transition(
+        self, tenant_id: str, task_id: str, op_id: str, now: int, allowed_from: tuple[str, ...], target: str
+    ) -> Reservation:
+        _check_id("tenant_id", tenant_id)
+        _check_id("task_id", task_id)
+        _check_id("op_id", op_id)
+        _check_now(now)
+        with self._transaction() as connection:
+            self._release_expired(connection, tenant_id, task_id, now)
+            stored = self._read_reservation(connection, tenant_id, task_id, op_id)
+            if stored is None:
+                raise Refused("unknown reservation")
+            if stored.state not in allowed_from:
+                raise Refused(f"cannot move a {stored.state} reservation to {target}")
+            if target == "issued":
+                root_binding = connection.execute(
+                    "SELECT root_binding FROM tasks WHERE tenant_id = ? AND task_id = ?", (tenant_id, task_id)
+                ).fetchone()[0]
+                link_bindings = tuple(
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT binding FROM reservation_links WHERE tenant_id = ? AND task_id = ? AND op_id = ?",
+                        (tenant_id, task_id, op_id),
+                    )
+                )
+                if self._revoked(connection, tenant_id, task_id, (root_binding, *link_bindings)):
+                    raise Refused("task root, task, tenant or a link is revoked")
+            connection.execute(
+                "UPDATE reservations SET state = ?, updated_at = ? WHERE tenant_id = ? AND task_id = ? AND op_id = ?",
+                (target, now, tenant_id, task_id, op_id),
+            )
+            return Reservation(tenant_id, task_id, op_id, stored.digest, stored.cost, target, stored.expires_at)
+
+    def mark_issued(self, tenant_id: str, task_id: str, op_id: str, now: int) -> Reservation:
+        """reserved -> issued, recorded before a credential is minted. Refused if the
+        reservation expired and was released, was already issued, or is now revoked."""
+        return self._transition(tenant_id, task_id, op_id, now, ("reserved",), "issued")
+
+    def mark_done(self, tenant_id: str, task_id: str, op_id: str, now: int) -> Reservation:
+        return self._transition(tenant_id, task_id, op_id, now, ("issued",), "done")
+
+    def mark_outcome_unknown(self, tenant_id: str, task_id: str, op_id: str, now: int) -> Reservation:
+        """issued -> outcome_unknown. The budget stays spent; it is never credited
+        back automatically, only an operator reconciles it."""
+        return self._transition(tenant_id, task_id, op_id, now, ("issued",), "outcome_unknown")
+
+    def reservation(self, tenant_id: str, task_id: str, op_id: str, now: int) -> Reservation | None:
+        _check_now(now)
+        with self._transaction() as connection:
+            self._release_expired(connection, tenant_id, task_id, now)
+            return self._read_reservation(connection, tenant_id, task_id, op_id)
+
+    def task_budget(self, tenant_id: str, task_id: str, now: int) -> BudgetStatus:
+        _check_now(now)
+        with self._transaction() as connection:
+            self._release_expired(connection, tenant_id, task_id, now)
+            row = connection.execute(
+                "SELECT budget, spent FROM tasks WHERE tenant_id = ? AND task_id = ?", (tenant_id, task_id)
+            ).fetchone()
+            if row is None:
+                raise Refused("unknown task")
+            return BudgetStatus(budget=row[0], spent=row[1])
+
+    def link_budget(self, link: ChainLink, now: int) -> BudgetStatus | None:
+        """Spend against `link`'s cap, or None if the link has not been used yet."""
+        _check_now(now)
+        with self._transaction() as connection:
+            self._release_expired(connection, link.tenant_id, link.task_id, now)
+            row = connection.execute("SELECT cap, spent FROM links WHERE binding = ?", (link.binding(),)).fetchone()
+            return None if row is None else BudgetStatus(budget=row[0], spent=row[1])
