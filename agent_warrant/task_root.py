@@ -15,6 +15,7 @@ from .identity import decode_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
+from .trust import IssuerTrustPolicy
 
 RECORD_TYPE = "task-root"
 RECORD_VERSION = 1
@@ -168,11 +169,16 @@ class TaskRootResult:
 def verify_root(
     encoded: str,
     resolver: IssuerResolver,
+    trust_policy: IssuerTrustPolicy,
     revocation_checker: RevocationChecker,
     now: int,
 ) -> TaskRootResult:
     """Never raises on attacker-controlled `encoded`; every failure is a
-    fail-closed result. No possession proof is checked."""
+    fail-closed result. No possession proof is checked. The trust policy is
+    mandatory: an issuer it does not list is refused before any key lookup, and
+    claims beyond the issuer's allowance are refused after its signature checks."""
+    if not isinstance(trust_policy, IssuerTrustPolicy):
+        raise TypeError("verify_root requires an IssuerTrustPolicy")
     if isinstance(now, bool) or not isinstance(now, int):
         return TaskRootResult(valid=False, reason="now must be an integer", checked_at=0)
 
@@ -180,6 +186,10 @@ def verify_root(
         root = TaskRoot.decode(encoded)
     except (ValueError, TypeError) as err:
         return TaskRootResult(valid=False, reason=f"malformed task root: {err}", checked_at=now)
+
+    refusal = trust_policy.check_issuer(root.issuer)
+    if refusal:
+        return TaskRootResult(valid=False, reason=refusal, checked_at=now)
 
     try:
         issuer_key = resolver.resolve(root.issuer)
@@ -195,6 +205,10 @@ def verify_root(
         return TaskRootResult(valid=False, reason="task root is not yet valid", checked_at=now)
     if now >= root.expires_at:
         return TaskRootResult(valid=False, reason="task root has expired", checked_at=now)
+
+    refusal = trust_policy.check_claims(root)
+    if refusal:
+        return TaskRootResult(valid=False, reason=refusal, checked_at=now)
 
     try:
         revoked = revocation_checker.is_revoked(root.issuer, root.binding())
