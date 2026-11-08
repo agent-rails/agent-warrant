@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
-from agent_warrant.canonical import signing_input
+from agent_warrant.canonical import canonicalize, signing_input
 from agent_warrant.chain import (
     MAX_CHAIN_ENCODED_BYTES,
     ChainLink,
@@ -622,3 +623,88 @@ def test_failed_results_carry_no_authority(world):
 def test_binding_is_unique_per_link(world):
     links = world.chain(3)
     assert len({link.binding() for link in links} | {world.root.binding()}) == 4
+
+
+P = 2**255 - 19
+WEAK_KEYS = {
+    "identity": bytes([1]) + bytes(31),
+    "order-2": (P - 1).to_bytes(32, "little"),
+    "order-4": bytes(32),
+    "order-8": bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+    "y-equals-p-plus-1": (P + 1).to_bytes(32, "little"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_KEYS))
+def test_delegate_refuses_weak_child_subject(world, name):
+    with pytest.raises(ValueError, match="subject is not a canonical"):
+        world.link(world.root, 0, child_subject=b64u(WEAK_KEYS[name]))
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_KEYS))
+def test_signed_link_with_weak_subject_is_refused_at_verify(world, name):
+    forged = world.forge(world.keys[0], world.root, subject=b64u(WEAK_KEYS[name]))
+    result = world.verify([forged], holder_key=world.keys[1])
+    assert result.valid is False
+    assert "subject is not a canonical" in result.reason
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_KEYS))
+def test_signed_link_with_weak_issuer_is_refused_at_verify(world, name):
+    forged = world.forge(world.keys[0], world.root, issuer=b64u(WEAK_KEYS[name]))
+    result = world.verify([forged], holder_key=world.keys[1])
+    assert result.valid is False
+    assert "issuer is not a canonical" in result.reason
+
+
+def test_identity_point_holder_cannot_be_forged_into_a_chain(world):
+    identity_subject = b64u(WEAK_KEYS["identity"])
+    with pytest.raises(ValueError, match="subject is not a canonical"):
+        world.link(world.root, 0, child_subject=identity_subject)
+
+
+@pytest.mark.parametrize("field", ["task_id", "tenant_id"])
+@pytest.mark.parametrize("value", ["a b", "a\x00b", "a\u202eb", "caf\u00e9"])
+def test_link_ids_must_be_printable_ascii(world, field, value):
+    forged = world.forge(world.keys[0], world.root, **{field: value})
+    result = world.verify([forged])
+    assert result.valid is False
+    assert f"{field} must be ASCII printable" in result.reason
+
+
+def sign_body(world, signer, link, body):
+    signature = signer.sign(link.signing_bytes())
+    return f"{b64u(body)}.{b64u(signature)}"
+
+
+def test_non_canonical_link_body_is_refused_even_with_a_valid_signature(world):
+    link = world.chain(1)[0]
+    body = json.dumps(link.signable_fields(), separators=(",", ":")).encode()
+    assert body != canonicalize(link.signable_fields())
+    encoded = sign_body(world, world.keys[0], link, body)
+    result = verify_chain(
+        world.root.encode(),
+        [encoded],
+        prove_leaf(link, world.keys[1], NOW).encode(),
+        world.resolver,
+        POLICY,
+        NeverRevoked(),
+        NOW,
+    )
+    assert (result.valid, result.reason) == (False, "link 1: body is not in canonical form")
+
+
+def test_non_canonical_leaf_proof_body_is_refused(world):
+    proof = prove_leaf(world.root, world.keys[0], NOW)
+    body = json.dumps(proof.signable_fields()).encode()
+    assert body != canonicalize(proof.signable_fields())
+    encoded = f"{b64u(body)}.{proof.signature}"
+    result = verify_chain(world.root.encode(), [], encoded, world.resolver, POLICY, NeverRevoked(), NOW)
+    assert (result.valid, result.reason) == (False, "leaf proof: body is not in canonical form")
+
+
+def test_weak_key_holder_proof_cannot_pass_for_a_valid_chain(world):
+    proof = prove_leaf(world.root, world.keys[0], NOW)
+    forged = LeafProof(binding=proof.binding, iat=NOW, signature=b64u(bytes([1]) + bytes(63)))
+    result = verify_chain(world.root.encode(), [], forged.encode(), world.resolver, POLICY, NeverRevoked(), NOW)
+    assert result.valid is False
