@@ -17,8 +17,12 @@ from agent_warrant.task_root import (
     issue_task_root,
     verify_root,
 )
+from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy
 
 NOW = 1_000_000
+POLICY = IssuerTrustPolicy(
+    {"issuer-a": IssuerAllowance(tenants={"tenant-1"}, principals={"alice"}, max_budget=100, max_depth=3)}
+)
 
 
 class FakeRevocation:
@@ -82,7 +86,7 @@ def test_issue_encode_decode_roundtrip(issuer_key):
 
 def test_valid_root_verifies(issuer_key, resolver):
     root = make_root(issuer_key)
-    result = verify_root(root.encode(), resolver, FakeRevocation(), NOW)
+    result = verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is True
     assert result.reason == "ok"
     assert result.root == root
@@ -90,67 +94,67 @@ def test_valid_root_verifies(issuer_key, resolver):
 
 def test_verification_needs_no_possession_proof(issuer_key, resolver):
     root = make_root(issuer_key)
-    assert verify_root(root.encode(), resolver, FakeRevocation(), NOW).valid is True
+    assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW).valid is True
 
 
 def test_tampered_body_fails_signature(issuer_key, resolver):
     root = make_root(issuer_key)
     tampered = dataclasses.replace(root, budget=999)
-    result = verify_root(tampered.encode(), resolver, FakeRevocation(), NOW)
+    result = verify_root(tampered.encode(), resolver, POLICY, FakeRevocation(), NOW)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
 def test_wrong_signing_key_fails(resolver):
     root = make_root(generate_keypair())
-    result = verify_root(root.encode(), resolver, FakeRevocation(), NOW)
+    result = verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
 def test_unresolvable_issuer_fails(issuer_key):
     root = make_root(issuer_key)
-    result = verify_root(root.encode(), PinnedResolver({}), FakeRevocation(), NOW)
+    result = verify_root(root.encode(), PinnedResolver({}), POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert result.reason.startswith("unresolvable issuer")
 
 
 def test_expired_root_fails(issuer_key, resolver):
     root = make_root(issuer_key)
-    result = verify_root(root.encode(), resolver, FakeRevocation(), root.expires_at)
+    result = verify_root(root.encode(), resolver, POLICY, FakeRevocation(), root.expires_at)
     assert (result.valid, result.reason) == (False, "task root has expired")
 
 
 def test_last_valid_second_passes(issuer_key, resolver):
     root = make_root(issuer_key)
-    assert verify_root(root.encode(), resolver, FakeRevocation(), root.expires_at - 1).valid is True
+    assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), root.expires_at - 1).valid is True
 
 
 def test_issued_in_future_beyond_skew_fails(issuer_key, resolver):
     root = make_root(issuer_key)
-    result = verify_root(root.encode(), resolver, FakeRevocation(), NOW - 6)
+    result = verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW - 6)
     assert (result.valid, result.reason) == (False, "task root is not yet valid")
 
 
 def test_issued_within_skew_passes(issuer_key, resolver):
     root = make_root(issuer_key)
-    assert verify_root(root.encode(), resolver, FakeRevocation(), NOW - 5).valid is True
+    assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW - 5).valid is True
 
 
 def test_revoked_root_fails(issuer_key, resolver):
     root = make_root(issuer_key)
-    result = verify_root(root.encode(), resolver, FakeRevocation({root.binding()}), NOW)
+    result = verify_root(root.encode(), resolver, POLICY, FakeRevocation({root.binding()}), NOW)
     assert (result.valid, result.reason) == (False, "task root has been revoked")
 
 
 def test_revocation_checked_with_authenticated_issuer_and_binding(issuer_key, resolver):
     root = make_root(issuer_key)
     checker = FakeRevocation()
-    verify_root(root.encode(), resolver, checker, NOW)
+    verify_root(root.encode(), resolver, POLICY, checker, NOW)
     assert checker.calls == [("issuer-a", root.binding())]
 
 
 def test_unreachable_revocation_fails_closed(issuer_key, resolver):
     root = make_root(issuer_key)
-    result = verify_root(root.encode(), resolver, FakeRevocation(unreachable=True), NOW)
+    result = verify_root(root.encode(), resolver, POLICY, FakeRevocation(unreachable=True), NOW)
     assert result.valid is False
     assert result.reason.startswith("revocation status unavailable")
 
@@ -158,19 +162,19 @@ def test_unreachable_revocation_fails_closed(issuer_key, resolver):
 def test_invalid_root_never_reaches_revocation_lookup(issuer_key, resolver):
     root = make_root(issuer_key)
     checker = FakeRevocation()
-    verify_root(dataclasses.replace(root, budget=1).encode(), resolver, checker, NOW)
+    verify_root(dataclasses.replace(root, budget=1).encode(), resolver, POLICY, checker, NOW)
     assert checker.calls == []
 
 
 def test_non_integer_now_fails_closed(issuer_key, resolver):
     root = make_root(issuer_key)
     for now in (float(NOW), True, None, "1"):
-        assert verify_root(root.encode(), resolver, FakeRevocation(), now).valid is False
+        assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), now).valid is False
 
 
 @pytest.mark.parametrize("encoded", ["", ".", "a.", ".b", "a.b.c", "!!!.sig", 5, None, b"x", "x" * 20000])
 def test_malformed_encodings_fail_closed(resolver, encoded):
-    result = verify_root(encoded, resolver, FakeRevocation(), NOW)
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert result.reason.startswith("malformed task root")
 
@@ -178,13 +182,13 @@ def test_malformed_encodings_fail_closed(resolver, encoded):
 def test_non_canonical_base64_is_refused(issuer_key, resolver):
     root = make_root(issuer_key)
     body, proof = root.encode().split(".")
-    assert verify_root(body + "=." + proof, resolver, FakeRevocation(), NOW).valid is False
-    assert verify_root(body + "\n." + proof, resolver, FakeRevocation(), NOW).valid is False
+    assert verify_root(body + "=." + proof, resolver, POLICY, FakeRevocation(), NOW).valid is False
+    assert verify_root(body + "\n." + proof, resolver, POLICY, FakeRevocation(), NOW).valid is False
 
 
 def test_unknown_key_is_refused(issuer_key, resolver):
     fields = {**make_fields(), "extra": 1}
-    result = verify_root(forge(issuer_key, fields), resolver, FakeRevocation(), NOW)
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert "unknown keys: extra" in result.reason
 
@@ -192,14 +196,14 @@ def test_unknown_key_is_refused(issuer_key, resolver):
 def test_missing_key_is_refused(issuer_key, resolver):
     fields = make_fields()
     del fields["purpose"]
-    result = verify_root(forge(issuer_key, fields), resolver, FakeRevocation(), NOW)
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
     assert "missing required keys: purpose" in result.reason
 
 
 def test_duplicate_key_is_refused(issuer_key, resolver):
     fields = make_fields()
     raw = json.dumps(fields)[:-1] + ', "task_id": "task-2"}'
-    result = verify_root(forge(issuer_key, fields, raw_body=raw.encode()), resolver, FakeRevocation(), NOW)
+    result = verify_root(forge(issuer_key, fields, raw_body=raw.encode()), resolver, POLICY, FakeRevocation(), NOW)
     assert "duplicate key" in result.reason
 
 
@@ -207,19 +211,19 @@ def test_duplicate_key_is_refused(issuer_key, resolver):
 def test_non_integer_timestamp_is_refused(issuer_key, resolver, value):
     fields = make_fields(issued_at=value)
     raw = json.dumps(fields).encode()
-    result = verify_root(forge(issuer_key, make_fields(), raw_body=raw), resolver, FakeRevocation(), NOW)
+    result = verify_root(forge(issuer_key, make_fields(), raw_body=raw), resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert result.reason.startswith("malformed task root")
 
 
 def test_wrong_domain_tag_does_not_verify_as_task_root(issuer_key, resolver):
     encoded = forge(issuer_key, make_fields(), tag_type="chain-link")
-    result = verify_root(encoded, resolver, FakeRevocation(), NOW)
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
 def test_wrong_version_tag_does_not_verify(issuer_key, resolver):
-    result = verify_root(forge(issuer_key, make_fields(), version=2), resolver, FakeRevocation(), NOW)
+    result = verify_root(forge(issuer_key, make_fields(), version=2), resolver, POLICY, FakeRevocation(), NOW)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
@@ -227,7 +231,7 @@ def test_untagged_signature_does_not_verify(issuer_key, resolver):
     fields = make_fields()
     body = canonicalize(fields)
     encoded = f"{b64u(body)}.{b64u(issuer_key.sign(body))}"
-    result = verify_root(encoded, resolver, FakeRevocation(), NOW)
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
@@ -245,7 +249,7 @@ def test_v1_grant_encoding_is_not_a_task_root(issuer_key, resolver):
         },
         issuer_key,
     )
-    result = verify_root(grant.encode(), resolver, FakeRevocation(), NOW)
+    result = verify_root(grant.encode(), resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert result.reason.startswith("malformed task root")
 
@@ -277,12 +281,19 @@ def test_issue_refuses_invalid_fields(issuer_key, overrides, message):
 
 def test_boundary_values_accepted(issuer_key, resolver):
     root = make_root(issuer_key, budget=0, max_depth=MAX_CHAIN_DEPTH, expires_at=NOW + MAX_TTL)
-    assert verify_root(root.encode(), resolver, FakeRevocation(), NOW).valid is True
+    wide = IssuerTrustPolicy(
+        {
+            "issuer-a": IssuerAllowance(
+                tenants={"tenant-1"}, principals={"alice"}, max_budget=0, max_depth=MAX_CHAIN_DEPTH
+            )
+        }
+    )
+    assert verify_root(root.encode(), resolver, wide, FakeRevocation(), NOW).valid is True
 
 
 def test_signed_invalid_fields_are_refused_at_verify(issuer_key, resolver):
     fields = make_fields(budget=-5)
-    result = verify_root(forge(issuer_key, fields), resolver, FakeRevocation(), NOW)
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert "budget" in result.reason
 
@@ -299,4 +310,4 @@ def test_static_revocation_checker_integration(issuer_key, resolver):
         "issuer-a", [root.binding()], issuer_key, issued_at=float(NOW), sequence=1, ttl_seconds=600.0
     )
     checker = StaticRevocationChecker(revocation_list, resolver, now=float(NOW))
-    assert verify_root(root.encode(), resolver, checker, NOW).reason == "task root has been revoked"
+    assert verify_root(root.encode(), resolver, POLICY, checker, NOW).reason == "task root has been revoked"
