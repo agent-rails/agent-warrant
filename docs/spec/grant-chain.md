@@ -80,3 +80,66 @@ A resolver maps an issuer to a key only, so a valid signature alone does not aut
 - Collections passed as a bare `str` raise `TypeError`; empty entries raise `ValueError`.
 
 The policy is copied at construction.
+
+# Part 2: delegation links, possession proof and chain verification
+
+Facts about `agent_warrant.chain`, `agent_warrant.scope` and chain revocation. Vectors: `tests/vectors/chain.json`, checked by `tests/test_chain_vectors.py`. The ledger is not specified here.
+
+## ChainLink
+
+Record type `chain-link`, version 1. Fields, all required, none optional:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `task_id` | id | equals the root's |
+| `tenant_id` | id | equals the root's |
+| `task_root` | digest | binding of the TaskRoot |
+| `parent_hash` | digest | binding of the previous record: the TaskRoot for the first link, otherwise the previous link |
+| `issuer` | public key | the previous holder; signs the link; must equal the previous record's `subject` |
+| `subject` | public key | the next holder |
+| `scope` | object | narrows the previous record's scope |
+| `budget` | integer | at most the previous record's budget |
+| `depth` | integer | 1 to 16; previous depth + 1 (the TaskRoot is depth 0) |
+| `issued_at` | integer | seconds; at least the previous `issued_at`; at most `now + 5` |
+| `expires_at` | integer | seconds; greater than `issued_at`; at most the previous `expires_at`; at most 86400 s after `issued_at`; greater than `now` |
+
+- Digests are canonical unpadded base64url of 32 bytes. Public keys follow the TaskRoot "Public keys" rule. Ids follow the TaskRoot "Ids" rule.
+- A link's binding is `base64url(sha256(signed bytes))`. Signed bytes are `signing_input("chain-link", 1, body)`. Transport and canonical-body rules are the TaskRoot's; encoded length is at most 16384 characters.
+- The root's `max_depth` bounds the number of links. `max_depth` 0 allows no links.
+
+## delegate
+
+`delegate(root, parent, parent_holder_key, *, child_subject, scope, budget, ttl, now) -> ChainLink`, where `parent` is the TaskRoot or the previous link. It raises `ValueError` for anything verification would refuse: a key that is not `parent.subject`, a parent from another root, depth over `root.max_depth`, a scope that does not narrow, budget above the parent's or not an integer, a parent not valid at `now`, an invalid `child_subject`, a non-positive `ttl`. `expires_at` is `min(now + ttl, parent.expires_at)`.
+
+## Possession proof
+
+`LeafProof` is `{binding, iat}` plus a signature, transported like a link. The signed bytes are `signing_input("possession", 1, {"binding": ..., "iat": ...})` under the leaf subject's key (the TaskRoot's subject when there are no links). `binding` is the leaf record's binding, so a proof for one record does not satisfy another. The `possession` tag keeps a proof from verifying as a link or a root and the reverse.
+
+## verify_chain
+
+`verify_chain(root_encoded, links_encoded, leaf_proof, resolver, trust_policy, revocation_checker, now, max_proof_age_seconds=60) -> ChainVerifyResult(valid, reason, root, links, checked_at)`
+
+- Never raises on attacker-controlled input; every failure is `valid=False` with a reason. `revocation_checker` that is `None` or lacks `is_revoked` raises `TypeError` (caller bug). `now` is an integer.
+- Total encoded size (root plus links) is at most 262144 characters.
+- Order of checks, stopping at the first failure:
+  1. the root, as in `verify_root` without the revocation lookup (decode, policy lists issuer, issuer signature, validity window, issuer allowance)
+  2. number of links at most `root.max_depth`
+  3. per link, in order: decode; same `task_id` and `tenant_id` as the root; `task_root` equals the root binding; `issuer` equals the previous subject; `parent_hash` equals the previous binding; `depth` is previous + 1; signature by `issuer`; scope narrows; budget not above previous; `expires_at` not after previous; `now < expires_at`; `issued_at` not before previous; `issued_at <= now + 5`
+  4. leaf proof: decodes; bound to the leaf binding; signature by the leaf subject; `iat <= now + 5`; `now - iat <= max_proof_age_seconds`
+  5. revocation, once, with a `ChainContext`
+- Reordered, duplicated or skipped links fail the `parent_hash`/`issuer`/`depth` checks. A link from another task or tenant fails the `task_id`/`tenant_id` check; a link under a different root with the same task and tenant fails the `task_root` check.
+- A TaskRoot alone never yields a valid chain: the proof must be signed by the leaf subject's key, and links must be signed by the previous subject's key.
+- `valid=True` means the chain is authentic and narrowing, inside its validity window, not revoked, and the presenter holds the leaf key now. `leaf_scope` and `leaf_subject` expose the leaf's authority; applying them (`covers`) and charging budget are the caller's job.
+
+## Chain revocation
+
+`ChainRevocationChecker.is_revoked(context) -> bool`, with `ChainContext(task_id, tenant_id, root_issuer, task_root, link_bindings)`.
+
+- Mandatory. Called last and once, so an invalid chain never triggers a lookup.
+- Returns `True` if the task, the tenant, the root or any listed link is revoked. Revoking a link revokes every chain that contains it and no chain that stops before it.
+- Raises `RevocationSourceUnreachable` when status cannot be determined; `verify_chain` then returns `valid=False`. Returning `False` on uncertainty is a checker bug.
+- The root is not checked separately by a `RevocationChecker`; the chain checker decides on `context.task_root`.
+
+## Scope matching (`scope.py`)
+
+Rules are in the TaskRoot "Scope" section. In a chain, a prefix pattern ends at a separator (`.` `:` `/` `_` `-`) before `*`, so `deploy.*` never covers `deployx`. `covers` is the enforcement matcher and `scope_narrows` is the delegation check; both use the same entry rules. Principal prefixes in the trust policy use their own stricter delimiter set (`:` `/` `.`).
