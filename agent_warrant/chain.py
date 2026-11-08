@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import binascii
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
+from .exceptions import RevocationSourceUnreachable
 from .identity import decode_public_key, encode_public_key, is_valid_public_key
 from .resolver import IssuerResolver
-from .revocation import RevocationChecker
 from .scope import scope_narrows, validate_scope
 from .task_root import (
     CLOCK_SKEW_SECONDS,
@@ -19,7 +19,7 @@ from .task_root import (
     MAX_FIELD_CHARACTERS,
     MAX_TTL,
     TaskRoot,
-    verify_root,
+    check_root,
 )
 from .trust import IssuerTrustPolicy
 
@@ -245,13 +245,34 @@ class ChainVerifyResult:
         return self.links[-1].scope if self.links else self.root.scope
 
 
+@dataclass(frozen=True)
+class ChainContext:
+    """What a revocation source needs to judge a verified chain: the task and tenant,
+    the root's issuer and binding, and the binding of every link in order. The chain
+    is revoked if the task, the tenant, the root or any link is."""
+
+    task_id: str
+    tenant_id: str
+    root_issuer: str
+    task_root: str
+    link_bindings: tuple[str, ...]
+
+
+class ChainRevocationChecker(Protocol):
+    """MUST return True when the task, tenant, root or any link in `context` is
+    revoked, and MUST raise RevocationSourceUnreachable, never return False, when
+    status cannot be determined: verify_chain treats that exception as fail-closed."""
+
+    def is_revoked(self, context: ChainContext) -> bool: ...
+
+
 def verify_chain(
     root_encoded: str,
     links_encoded: list[str],
     leaf_proof: str,
     resolver: IssuerResolver,
     trust_policy: IssuerTrustPolicy,
-    revocation_checker: RevocationChecker,
+    revocation_checker: ChainRevocationChecker,
     now: int,
     max_proof_age_seconds: int = DEFAULT_PROOF_MAX_AGE_SECONDS,
 ) -> ChainVerifyResult:
@@ -272,7 +293,10 @@ def verify_chain(
     if len(root_encoded) + sum(len(item) for item in links_encoded) > MAX_CHAIN_ENCODED_BYTES:
         return fail("chain is larger than the size cap")
 
-    root_result = verify_root(root_encoded, resolver, trust_policy, revocation_checker, now)
+    if revocation_checker is None or not callable(getattr(revocation_checker, "is_revoked", None)):
+        raise TypeError("verify_chain requires a ChainRevocationChecker")
+
+    root_result = check_root(root_encoded, resolver, trust_policy, now)
     if not root_result.valid or root_result.root is None:
         return fail(f"task root: {root_result.reason}")
     root = root_result.root
@@ -314,6 +338,20 @@ def verify_chain(
         return fail("leaf proof: issued in the future")
     if now - proof.iat > max_proof_age_seconds:
         return fail("leaf proof: stale")
+
+    context = ChainContext(
+        task_id=root.task_id,
+        tenant_id=root.tenant_id,
+        root_issuer=root.issuer,
+        task_root=root_binding,
+        link_bindings=tuple(link.binding() for link in links),
+    )
+    try:
+        revoked = revocation_checker.is_revoked(context)
+    except RevocationSourceUnreachable as err:
+        return fail(f"revocation status unavailable: {err}")
+    if revoked:
+        return fail("chain has been revoked")
 
     return ChainVerifyResult(valid=True, reason="ok", root=root, links=tuple(links), checked_at=now)
 

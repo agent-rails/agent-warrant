@@ -424,3 +424,12 @@ def test_scope_is_covered_by_the_signature(issuer_key, resolver):
 def test_scope_round_trips(issuer_key):
     root = make_root(issuer_key)
     assert TaskRoot.decode(root.encode()).scope == root.scope
+
+
+def test_check_root_skips_revocation_and_verify_root_does_not(issuer_key, resolver):
+    from agent_warrant.task_root import check_root
+
+    root = make_root(issuer_key)
+    checker = FakeRevocation({root.binding()})
+    assert check_root(root.encode(), resolver, POLICY, NOW).valid is True
+    assert verify_root(root.encode(), resolver, POLICY, checker, NOW).valid is False
