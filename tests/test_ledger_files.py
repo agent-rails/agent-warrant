@@ -7,8 +7,9 @@ import stat
 import pytest
 from test_ledger import NOW, World
 
+from agent_warrant.encoding import sha256_b64u
 from agent_warrant.exceptions import RevocationSourceUnreachable
-from agent_warrant.ledger import LedgerUnavailable, TaskLedger
+from agent_warrant.ledger import LedgerUnavailable, Operation, TaskLedger
 
 
 def private_dir(tmp_path):
@@ -205,7 +206,7 @@ def test_an_empty_replacement_file_never_answers_not_revoked(tmp_path):
     os.chmod(path, 0o600)
     with pytest.raises(RevocationSourceUnreachable):
         ledger.is_revoked(World().context())
-    with pytest.raises(LedgerUnavailable, match="schema"):
+    with pytest.raises(LedgerUnavailable, match="schema|SQLite"):
         TaskLedger.open(path)
 
 
@@ -217,3 +218,132 @@ def test_open_refuses_a_database_with_an_unsupported_schema_version(tmp_path):
     connection.close()
     with pytest.raises(LedgerUnavailable, match="schema version 99"):
         TaskLedger.open(path)
+
+
+def count_connections(monkeypatch):
+    import agent_warrant.ledger as ledger_module
+
+    calls = []
+    real = sqlite3.connect
+
+    def counting(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", counting)
+    return calls
+
+
+def test_one_sqlite_connection_serves_every_call(tmp_path, monkeypatch):
+    calls = count_connections(monkeypatch)
+    world = World()
+    ledger = TaskLedger.create(private_dir(tmp_path) / "ledger.db")
+    ledger.open_task(world.verified(), NOW)
+    for index in range(5):
+        ledger.revoke_tenant(f"tenant-{index}", NOW)
+        ledger.is_revoked(world.context())
+        ledger.task_budget("t1", "task-1", NOW)
+    assert len(calls) == 1
+
+
+def test_open_uses_one_connection_too(tmp_path, monkeypatch):
+    path = private_dir(tmp_path) / "ledger.db"
+    TaskLedger.create(path)
+    calls = count_connections(monkeypatch)
+    ledger = TaskLedger.open(path)
+    for _ in range(3):
+        ledger.is_revoked(World().context())
+    assert len(calls) == 1
+
+
+def test_close_makes_further_use_fail_closed(tmp_path):
+    ledger = TaskLedger.create(private_dir(tmp_path) / "ledger.db")
+    ledger.close()
+    with pytest.raises(LedgerUnavailable, match="closed"):
+        ledger.revoke_tenant("t1", NOW)
+    with pytest.raises(RevocationSourceUnreachable):
+        ledger.is_revoked(World().context())
+
+
+def test_close_is_idempotent(tmp_path):
+    ledger = TaskLedger.create(private_dir(tmp_path) / "ledger.db")
+    ledger.close()
+    ledger.close()
+
+
+def test_context_manager_closes_the_ledger(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    with TaskLedger.create(path) as ledger:
+        ledger.revoke_tenant("t1", NOW)
+    with pytest.raises(LedgerUnavailable, match="closed"):
+        ledger.revoke_tenant("t2", NOW)
+    with TaskLedger.open(path) as reopened:
+        assert reopened.is_revoked(World().context()) is True
+
+
+def test_a_file_swapped_in_at_the_same_path_is_refused(tmp_path):
+    import shutil
+
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger.revoke_tenant("t1", NOW)
+    copy = path.parent / "copy.db"
+    shutil.copy(path, copy)
+    os.chmod(copy, 0o600)
+    os.replace(copy, path)
+    with pytest.raises(LedgerUnavailable, match="replaced"):
+        ledger.revoke_tenant("t2", NOW)
+    with pytest.raises(RevocationSourceUnreachable):
+        ledger.is_revoked(World().context())
+
+
+def test_a_ledger_is_safe_to_share_between_threads(tmp_path):
+    import threading
+
+    world = World(budget=1000)
+    ledger = TaskLedger.create(private_dir(tmp_path) / "ledger.db")
+    ledger.open_task(world.verified(), NOW)
+    errors = []
+
+    def work(thread_number):
+        try:
+            for index in range(10):
+                ledger.is_revoked(world.context())
+                ledger.reserve(
+                    Operation(
+                        f"op-{thread_number}-{index}",
+                        "t1",
+                        "task-1",
+                        world.root.binding(),
+                        "deploy.prod",
+                        "env/prod",
+                        sha256_b64u(b"a"),
+                        1,
+                        True,
+                        NOW + 100,
+                    ),
+                    [],
+                    NOW,
+                )
+        except Exception as err:
+            errors.append(err)
+
+    threads = [threading.Thread(target=work, args=(number,)) for number in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert errors == []
+    assert ledger.task_budget("t1", "task-1", NOW).spent == 80
+
+
+def test_overwriting_the_header_in_place_fails_closed(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger.revoke_tenant("t1", NOW)
+    with open(path, "r+b") as handle:
+        handle.write(b"garbage-garbage-")
+    with pytest.raises(RevocationSourceUnreachable):
+        ledger.is_revoked(World().context())
+    with pytest.raises(LedgerUnavailable, match="not a SQLite database"):
+        ledger.revoke_tenant("t2", NOW)
