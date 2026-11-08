@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
 from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
-from .identity import decode_public_key
+from .identity import is_valid_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
@@ -114,13 +114,8 @@ def _validate_fields(fields: dict[str, Any]) -> None:
         raise ValueError("expires_at must be after issued_at")
     if fields["expires_at"] - fields["issued_at"] > MAX_TTL:
         raise ValueError(f"lifetime must not exceed {MAX_TTL} seconds")
-    try:
-        key_bytes = _b64u_decode(fields["subject"])
-        decode_public_key(fields["subject"])
-    except (ValueError, binascii.Error):
-        raise ValueError("subject is not a canonical base64url Ed25519 public key") from None
-    if len(key_bytes) != 32:
-        raise ValueError("subject is not a canonical base64url Ed25519 public key")
+    if not is_valid_public_key(fields["subject"]):
+        raise ValueError("subject is not a canonical base64url Ed25519 public key of full order")
 
 
 def issue_task_root(
