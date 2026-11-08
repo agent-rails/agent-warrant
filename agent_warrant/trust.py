@@ -20,6 +20,19 @@ def _names(label: str, values: Iterable[str]) -> frozenset[str]:
     return result
 
 
+PREFIX_DELIMITERS = ":/."
+
+
+def _prefixes(values: Iterable[str]) -> frozenset[str]:
+    result = _names("principal_prefixes", values)
+    for prefix in result:
+        if len(prefix) < 2 or prefix[-1] not in PREFIX_DELIMITERS:
+            raise ValueError(
+                f"principal_prefixes entry {prefix!r} must be a non-empty stem ending in one of {PREFIX_DELIMITERS}"
+            )
+    return result
+
+
 def _limit(label: str, value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_SAFE_INTEGER:
         raise ValueError(f"{label} must be an integer between 0 and {MAX_SAFE_INTEGER}")
@@ -30,7 +43,8 @@ def _limit(label: str, value: int) -> int:
 class IssuerAllowance:
     """What one issuer may assert in a TaskRoot. Tenants and principals match
     exactly; a principal prefix applies only when listed in `principal_prefixes`
-    (no wildcards, no empty prefix). An empty set allows nothing."""
+    (no wildcards) and must end in one of : / . after a non-empty stem, so `svc:team-a:`
+    matches `svc:team-a:x` but never `svc:team-admin`. An empty set allows nothing."""
 
     tenants: Iterable[str] = field(default_factory=frozenset)
     principals: Iterable[str] = field(default_factory=frozenset)
@@ -41,7 +55,7 @@ class IssuerAllowance:
     def __post_init__(self) -> None:
         object.__setattr__(self, "tenants", _names("tenants", self.tenants))
         object.__setattr__(self, "principals", _names("principals", self.principals))
-        object.__setattr__(self, "principal_prefixes", _names("principal_prefixes", self.principal_prefixes))
+        object.__setattr__(self, "principal_prefixes", _prefixes(self.principal_prefixes))
         _limit("max_budget", self.max_budget)
         _limit("max_depth", self.max_depth)
 
