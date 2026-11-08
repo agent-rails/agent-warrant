@@ -25,7 +25,8 @@ MAX_CHAIN_DEPTH = 16
 MAX_TTL = int(MAX_TTL_SECONDS)
 CLOCK_SKEW_SECONDS = 5
 
-_STRING_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer", "subject")
+_ID_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer")
+_STRING_FIELDS = _ID_FIELDS + ("subject",)
 _INTEGER_FIELDS = ("budget", "max_depth", "issued_at", "expires_at")
 _BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS
 
@@ -96,12 +97,14 @@ class TaskRoot:
 
 
 def _validate_fields(fields: dict[str, Any]) -> None:
-    for name in _STRING_FIELDS:
+    for name in _ID_FIELDS:
         value = fields[name]
         if not isinstance(value, str) or not value:
             raise ValueError(f"{name} must be a non-empty string")
         if len(value) > MAX_FIELD_CHARACTERS:
             raise ValueError(f"{name} is longer than {MAX_FIELD_CHARACTERS} characters")
+        if not all("!" <= character <= "~" for character in value):
+            raise ValueError(f"{name} must be ASCII printable without whitespace or control characters")
     for name in _INTEGER_FIELDS:
         value = fields[name]
         if isinstance(value, bool) or not isinstance(value, int):

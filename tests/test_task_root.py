@@ -338,3 +338,38 @@ def test_verify_refuses_signed_root_with_weak_subject(issuer_key, resolver, name
     result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
     assert result.valid is False
     assert "subject is not a canonical" in result.reason
+
+
+BAD_IDS = {
+    "space": "svc: a",
+    "tab": "a\tb",
+    "newline": "a\nb",
+    "nul": "a\x00b",
+    "del": "a\x7fb",
+    "bidi-override": "svc:team-a\u202eadmin",
+    "zero-width-space": "a\u200bb",
+    "non-ascii": "caf\u00e9",
+    "leading-space": " a",
+    "trailing-space": "a ",
+}
+
+
+@pytest.mark.parametrize("field", ["task_id", "tenant_id", "principal", "purpose", "issuer"])
+@pytest.mark.parametrize("name", sorted(BAD_IDS))
+def test_issue_refuses_non_printable_or_non_ascii_ids(issuer_key, field, name):
+    with pytest.raises(ValueError, match=f"{field} must be ASCII printable"):
+        make_root(issuer_key, **{field: BAD_IDS[name]})
+
+
+@pytest.mark.parametrize("field", ["task_id", "tenant_id", "principal", "purpose", "issuer"])
+def test_verify_refuses_signed_root_with_bad_id(issuer_key, resolver, field):
+    fields = make_fields(**{field: "a\x00b"})
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.valid is False
+    assert f"{field} must be ASCII printable" in result.reason
+
+
+def test_all_printable_ascii_ids_are_accepted(issuer_key):
+    printable = "".join(chr(code) for code in range(0x21, 0x7F))
+    root = make_root(issuer_key, task_id=printable, purpose=printable)
+    assert TaskRoot.decode(root.encode()) == root
