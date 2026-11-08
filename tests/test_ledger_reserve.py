@@ -18,7 +18,7 @@ def world():
 
 @pytest.fixture
 def ledger(tmp_path, world):
-    opened = TaskLedger(tmp_path / "ledger.db")
+    opened = TaskLedger.create(tmp_path / "ledger.db")
     opened.open_task(world.verified(), NOW)
     return opened
 
@@ -306,7 +306,7 @@ def test_every_operation_field_changes_the_digest(world):
 
 
 def test_op_id_is_scoped_per_tenant_and_task(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger.create(tmp_path / "ledger.db")
     worlds = [World(tenant="t1", task="task-1"), World(tenant="t1", task="task-2"), World(tenant="t2", task="task-1")]
     for world in worlds:
         ledger.open_task(world.verified(), NOW)
@@ -316,7 +316,7 @@ def test_op_id_is_scoped_per_tenant_and_task(tmp_path):
 
 
 def test_same_op_id_in_another_task_with_different_operation_is_independent(tmp_path):
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger.create(tmp_path / "ledger.db")
     one, two = World(task="task-1"), World(task="task-2")
     ledger.open_task(one.verified(), NOW)
     ledger.open_task(two.verified(), NOW)
@@ -421,13 +421,13 @@ def test_replay_of_a_released_op_id_does_not_reserve_again(ledger, world):
 
 def test_reservations_and_spend_persist_across_restart(tmp_path, world):
     path = tmp_path / "ledger.db"
-    first = TaskLedger(path)
+    first = TaskLedger.create(path)
     first.open_task(world.verified(), NOW)
     links = world.chain(1)
     first.reserve(operation(world, links, cost=30), links, NOW)
     first.mark_issued("t1", "task-1", "op-1", NOW)
     del first
-    second = TaskLedger(path)
+    second = TaskLedger.open(path)
     assert second.task_budget("t1", "task-1", NOW).spent == 30
     assert second.link_budget(links[0], NOW).spent == 30
     assert second.reservation("t1", "task-1", "op-1", NOW).state == "issued"
@@ -438,12 +438,12 @@ def test_reservations_and_spend_persist_across_restart(tmp_path, world):
 
 def test_crash_between_reserve_and_issue_does_not_double_charge(tmp_path, world):
     path = tmp_path / "ledger.db"
-    first = TaskLedger(path)
+    first = TaskLedger.create(path)
     first.open_task(world.verified(), NOW)
     op = operation(world)
     first.reserve(op, [], NOW)
     del first
-    second = TaskLedger(path)
+    second = TaskLedger.open(path)
     again = second.reserve(op, [], NOW + 1)
     assert again.state == "reserved"
     assert second.task_budget("t1", "task-1", NOW + 1).spent == 10
@@ -459,7 +459,7 @@ def test_reserve_is_refused_once_the_chain_has_expired_even_if_the_operation_has
 
 def test_reserve_is_refused_once_the_root_has_expired(tmp_path):
     world = World(ttl=100)
-    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger = TaskLedger.create(tmp_path / "ledger.db")
     ledger.open_task(world.verified(), NOW)
     assert ledger.reserve(operation(world, expires_at=NOW + 10**6), [], NOW + 99).state == "reserved"
     with pytest.raises(Refused, match="chain has expired"):

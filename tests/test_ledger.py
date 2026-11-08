@@ -84,7 +84,7 @@ class World:
 
 @pytest.fixture
 def ledger(tmp_path):
-    return TaskLedger(tmp_path / "ledger.db")
+    return TaskLedger.create(tmp_path / "ledger.db")
 
 
 @pytest.fixture
@@ -232,13 +232,13 @@ def test_revocation_rows_cannot_be_updated_or_deleted(ledger, world, tmp_path):
 
 def test_revocations_persist_across_restart(tmp_path, world):
     path = tmp_path / "ledger.db"
-    first = TaskLedger(path)
+    first = TaskLedger.create(path)
     first.open_task(world.verified(), NOW)
     links = world.chain(2)
     first.revoke(links[1].binding(), NOW)
     first.revoke_tenant("t9", NOW)
     del first
-    second = TaskLedger(path)
+    second = TaskLedger.open(path)
     assert second.is_revoked(world.context(links)) is True
     assert second.is_revoked(world.context(links[:1])) is False
     assert second.is_revoked(World(tenant="t9").context()) is True
@@ -248,7 +248,7 @@ def test_revocations_persist_across_restart(tmp_path, world):
 
 def test_database_failure_is_unreachable_not_not_revoked(tmp_path, world):
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     path.unlink()
     path.mkdir()
     with pytest.raises(RevocationSourceUnreachable):
@@ -257,7 +257,7 @@ def test_database_failure_is_unreachable_not_not_revoked(tmp_path, world):
 
 def test_corrupt_database_is_unreachable(tmp_path, world):
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     path.write_bytes(b"this is not a sqlite database" * 100)
     for suffix in ("-wal", "-shm"):
         (tmp_path / f"ledger.db{suffix}").unlink(missing_ok=True)
@@ -267,7 +267,7 @@ def test_corrupt_database_is_unreachable(tmp_path, world):
 
 def test_writes_fail_closed_on_database_failure(tmp_path, world):
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     path.unlink()
     path.mkdir()
     with pytest.raises(LedgerUnavailable):
@@ -278,16 +278,16 @@ def test_writes_fail_closed_on_database_failure(tmp_path, world):
 
 def test_unsupported_schema_version_is_refused(tmp_path):
     path = tmp_path / "ledger.db"
-    TaskLedger(path)
+    TaskLedger.create(path)
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA user_version = 99")
     connection.close()
     with pytest.raises(LedgerUnavailable, match="schema version 99"):
-        TaskLedger(path)
+        TaskLedger.open(path)
 
 
 def test_ledger_file_is_private(tmp_path):
-    TaskLedger(tmp_path / "ledger.db")
+    TaskLedger.create(tmp_path / "ledger.db")
     assert (tmp_path / "ledger.db").stat().st_mode & 0o077 == 0
 
 
@@ -305,7 +305,7 @@ def test_ledger_is_a_chain_revocation_checker_for_verify_chain(ledger, world):
 
 def test_verify_chain_fails_closed_when_ledger_is_unreachable(tmp_path, world):
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     links = world.chain(1)
     proof = prove_leaf(links[-1], world.keys[1], NOW, audience=AUDIENCE, request_digest=REQUEST).encode()
     path.unlink()

@@ -29,7 +29,7 @@ operation = Operation(
     verdict_allowed=True,
     expires_at=2_000_000,
 )
-ledger = TaskLedger(path)
+ledger = TaskLedger.open(path)
 while time.time() < float(start_at):
     pass
 try:
@@ -80,7 +80,7 @@ def race(path, world, racers):
 def test_two_processes_race_for_the_last_budget_unit(tmp_path, round_number):
     world = World(budget=1)
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     ledger.open_task(world.verified(), NOW)
     results = race(path, world, 2)
     assert sorted(result.split()[0] for result in results) == ["REFUSED", "WON"]
@@ -92,7 +92,7 @@ def test_two_processes_race_for_the_last_budget_unit(tmp_path, round_number):
 def test_many_processes_never_overspend_the_pool(tmp_path):
     world = World(budget=3)
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     ledger.open_task(world.verified(), NOW)
     results = race(path, world, 8)
     assert sum(result == "WON" for result in results) == 3
@@ -103,7 +103,7 @@ def test_many_processes_never_overspend_the_pool(tmp_path):
 def test_racers_with_the_same_op_id_charge_once(tmp_path):
     world = World(budget=5)
     path = tmp_path / "ledger.db"
-    ledger = TaskLedger(path)
+    ledger = TaskLedger.create(path)
     ledger.open_task(world.verified(), NOW)
     start_at = time.time() + 4
     digest = sha256_b64u(b"args")
