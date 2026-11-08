@@ -1,5 +1,5 @@
 {
-  "description": "Canonical byte vectors. canonical: canonicalize(input) must equal canonical_hex and hash to sha256. signing_input: signing_input(record_type, version, body) must equal signing_input_hex. strict_rejections: strict_decode(raw, required={id,issued_at}, integer_fields={issued_at}) must raise ValueError containing error. No Unicode normalisation is applied: nfc-composed and nfd-decomposed produce different bytes.",
+  "description": "Canonical byte vectors. canonical: canonicalize(input) must equal canonical_hex and hash to sha256. signing_input: signing_input(record_type, version, body) must equal signing_input_hex. strict_accepts: strict_decode(raw, required, optional, integer_fields) must return decoded. strict_rejections: the same call must raise ValueError containing error; raw_template expands to prefix + repeat*count + suffix, with the byte cap applying to the UTF-8 encoding. No Unicode normalisation is applied: nfc-composed and nfd-decomposed produce different bytes. Signatures cover only re-canonicalized bytes; raw input bytes are never hashed.",
   "canonical": [
     {
       "name": "empty-object",
@@ -35,11 +35,26 @@
       "name": "integers",
       "input": {
         "zero": 0,
-        "neg": -7,
-        "big": 9007199254740993
+        "neg": -7
       },
-      "canonical_hex": "7b22626967223a393030373139393235343734303939332c226e6567223a2d372c227a65726f223a307d",
-      "sha256": "92cde06fd2daf26fcaad2d25d48fe05ad79df3c5bd4287f8b9664b45688af2bb"
+      "canonical_hex": "7b226e6567223a2d372c227a65726f223a307d",
+      "sha256": "84c3ae8e2ed039510a4de4ef377c86a677b74985cd604bdbfb95785503fb2f17"
+    },
+    {
+      "name": "integer-max-safe",
+      "input": {
+        "n": 9007199254740991
+      },
+      "canonical_hex": "7b226e223a393030373139393235343734303939317d",
+      "sha256": "e1da48c6a6089f06ecb4e0a2259e658e3786b2420f52baccdf929ec6460d7b41"
+    },
+    {
+      "name": "integer-min-safe",
+      "input": {
+        "n": -9007199254740991
+      },
+      "canonical_hex": "7b226e223a2d393030373139393235343734303939317d",
+      "sha256": "d49d713821fc149f81ef6ca8054beeba696f5da052f0ab3e2d773808c5a9d625"
     },
     {
       "name": "string-escapes",
@@ -106,31 +121,431 @@
       "sha256": "b9e9abe5121380ec6eca9c4bd62605266f17f1d279d9d62a9c7bd6236080310f"
     }
   ],
+  "strict_accepts": [
+    {
+      "name": "minimal",
+      "raw": "{\"id\":\"a\",\"issued_at\":1}",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "decoded": {
+        "id": "a",
+        "issued_at": 1
+      }
+    },
+    {
+      "name": "with-optional",
+      "raw": "{\"issued_at\":2,\"note\":\"x\",\"id\":\"a\"}",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "decoded": {
+        "id": "a",
+        "issued_at": 2,
+        "note": "x"
+      }
+    },
+    {
+      "name": "max-safe-integer",
+      "raw": "{\"id\":\"a\",\"issued_at\":9007199254740991}",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "decoded": {
+        "id": "a",
+        "issued_at": 9007199254740991
+      }
+    },
+    {
+      "name": "min-safe-integer",
+      "raw": "{\"id\":\"a\",\"issued_at\":-9007199254740991}",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "decoded": {
+        "id": "a",
+        "issued_at": -9007199254740991
+      }
+    },
+    {
+      "name": "surrogate-pair-escape",
+      "raw": "{\"id\":\"\\ud83d\\ude00\",\"issued_at\":1}",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "decoded": {
+        "id": "\ud83d\ude00",
+        "issued_at": 1
+      }
+    },
+    {
+      "name": "nested-values",
+      "raw": "{\"id\":\"a\",\"issued_at\":1,\"note\":[{\"k\":[true,null,\"s\"]}]}",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "decoded": {
+        "id": "a",
+        "issued_at": 1,
+        "note": [
+          {
+            "k": [
+              true,
+              null,
+              "s"
+            ]
+          }
+        ]
+      }
+    }
+  ],
   "strict_rejections": [
     {
       "name": "float-1.0",
-      "raw": "{\"id\":\"a\",\"issued_at\":1.0}",
-      "error": "floats are not allowed"
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "floats are not allowed",
+      "raw": "{\"id\":\"a\",\"issued_at\":1.0}"
     },
     {
       "name": "float-exponent",
-      "raw": "{\"id\":\"a\",\"issued_at\":1e3}",
-      "error": "floats are not allowed"
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "floats are not allowed",
+      "raw": "{\"id\":\"a\",\"issued_at\":1e3}"
+    },
+    {
+      "name": "nan",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "NaN is not allowed",
+      "raw": "{\"id\":\"a\",\"issued_at\":1,\"note\":NaN}"
+    },
+    {
+      "name": "negative-zero",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "-0 is not allowed",
+      "raw": "{\"id\":\"a\",\"issued_at\":-0}"
+    },
+    {
+      "name": "integer-above-max-safe",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "outside",
+      "raw": "{\"id\":\"a\",\"issued_at\":9007199254740992}"
+    },
+    {
+      "name": "integer-below-min-safe",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "outside",
+      "raw": "{\"id\":\"a\",\"issued_at\":-9007199254740992}"
     },
     {
       "name": "duplicate-key",
-      "raw": "{\"id\":\"a\",\"id\":\"b\",\"issued_at\":1}",
-      "error": "duplicate key"
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "duplicate key",
+      "raw": "{\"id\":\"a\",\"id\":\"b\",\"issued_at\":1}"
+    },
+    {
+      "name": "nested-duplicate-key",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "duplicate key",
+      "raw": "{\"id\":\"a\",\"issued_at\":1,\"note\":{\"k\":1,\"k\":2}}"
+    },
+    {
+      "name": "escaped-duplicate-key",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "duplicate key",
+      "raw": "{\"id\":\"a\",\"\\u0069d\":\"b\",\"issued_at\":1}"
     },
     {
       "name": "unknown-key",
-      "raw": "{\"id\":\"a\",\"issued_at\":1,\"extra\":1}",
-      "error": "unknown keys"
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "unknown keys",
+      "raw": "{\"id\":\"a\",\"issued_at\":1,\"extra\":1}"
+    },
+    {
+      "name": "missing-key",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "missing required keys",
+      "raw": "{\"id\":\"a\"}"
     },
     {
       "name": "string-timestamp",
-      "raw": "{\"id\":\"a\",\"issued_at\":\"1\"}",
-      "error": "must be an integer"
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "must be an integer",
+      "raw": "{\"id\":\"a\",\"issued_at\":\"1\"}"
+    },
+    {
+      "name": "bool-timestamp",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "must be an integer",
+      "raw": "{\"id\":\"a\",\"issued_at\":true}"
+    },
+    {
+      "name": "lone-surrogate-value",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "surrogate",
+      "raw": "{\"id\":\"\\ud800\",\"issued_at\":1}"
+    },
+    {
+      "name": "lone-surrogate-key",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "surrogate",
+      "raw": "{\"id\":\"a\",\"issued_at\":1,\"note\":{\"\\udfff\":1}}"
+    },
+    {
+      "name": "bom",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "not valid JSON",
+      "raw": "\ufeff{\"id\":\"a\",\"issued_at\":1}"
+    },
+    {
+      "name": "trailing-data",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "not valid JSON",
+      "raw": "{\"id\":\"a\",\"issued_at\":1}x"
+    },
+    {
+      "name": "trailing-whitespace",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "whitespace",
+      "raw": "{\"id\":\"a\",\"issued_at\":1}\n"
+    },
+    {
+      "name": "leading-whitespace",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "whitespace",
+      "raw": " {\"id\":\"a\",\"issued_at\":1}"
+    },
+    {
+      "name": "byte-cap-non-ascii",
+      "required": [
+        "id",
+        "issued_at"
+      ],
+      "optional": [
+        "note"
+      ],
+      "integer_fields": [
+        "issued_at"
+      ],
+      "error": "byte limit",
+      "raw_template": {
+        "prefix": "{\"id\":\"",
+        "repeat": "\u4e2d",
+        "count": 30000,
+        "suffix": "\",\"issued_at\":1}"
+      }
     }
   ]
 }

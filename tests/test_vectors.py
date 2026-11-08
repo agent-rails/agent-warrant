@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_warrant.canonical import canonicalize, signing_input, strict_decode
+from agent_warrant.canonical import MAX_STRICT_DECODE_BYTES, canonicalize, signing_input, strict_decode
 
 VECTORS = json.loads((Path(__file__).parent / "vectors" / "canonical.json").read_text(encoding="utf-8"))
 
@@ -34,10 +34,35 @@ def test_signing_input_vectors_differ_across_type_and_version():
     assert len(hexes) == len(VECTORS["signing_input"])
 
 
+def decode_vector(vector):
+    raw = vector.get("raw")
+    if raw is None:
+        template = vector["raw_template"]
+        raw = template["prefix"] + template["repeat"] * template["count"] + template["suffix"]
+    return strict_decode(
+        raw,
+        required=vector["required"],
+        optional=vector["optional"],
+        integer_fields=vector["integer_fields"],
+    )
+
+
+@pytest.mark.parametrize("vector", VECTORS["strict_accepts"], ids=lambda v: v["name"])
+def test_strict_decoder_accepts_vector(vector):
+    assert decode_vector(vector) == vector["decoded"]
+
+
 @pytest.mark.parametrize("vector", VECTORS["strict_rejections"], ids=lambda v: v["name"])
 def test_strict_decoder_refuses_vector(vector):
     with pytest.raises(ValueError, match=vector["error"]):
-        strict_decode(vector["raw"], required={"id", "issued_at"}, integer_fields={"issued_at"})
+        decode_vector(vector)
+
+
+def test_byte_cap_vector_is_under_the_cap_in_characters():
+    vector = by_name(VECTORS["strict_rejections"], "byte-cap-non-ascii")
+    template = vector["raw_template"]
+    raw = template["prefix"] + template["repeat"] * template["count"] + template["suffix"]
+    assert len(raw) < MAX_STRICT_DECODE_BYTES < len(raw.encode("utf-8"))
 
 
 def test_nfc_and_nfd_strings_produce_different_bytes():
