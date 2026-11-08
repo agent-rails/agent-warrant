@@ -309,6 +309,38 @@
       "revoked": false,
       "expect_valid": false,
       "reason": "may not assert principal 'svc-admin'"
+    },
+    {
+      "name": "principal-nul-character",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOnRlYW1cdTAwMDB4IiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.51aTN9TRWS6dCSET7AXOgupEYkDpS_5XkwaKR8C9RKYp0o0ZyrIFHTWfIhg2ecZnYTpc2aTjYrk326kgEd0yDQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "principal-bidi-override",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOnRlYW3igK54IiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.sTLZo8ZP4463TYr-BTq3cD1nnPDT0w3aW05HUBpcqSAuPioBhnVJ3fEX0dZ6Z2F8baZPQSjVnVyCgZmNeErcDQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "principal-with-space",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOiB4IiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.cq6TxXKqJDiN99_0xZ6DJ_b9ZKzHfsEJuxc4beEg0kuRUuyQN76Z9ei65kCqMQ8k3X6IdcwYKTXFkNqMYbpiCg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "principal-non-ascii",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmNhZsOpIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.7RCsHeXXGraBvDHfg5syMCJzAykNou1ablSPBIOdeBt94c_kSvmizwXgKZgedRspDdEOk1ve3U0Vv-pNz7_qBg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "principal must be ASCII printable"
     }
   ]
 }
