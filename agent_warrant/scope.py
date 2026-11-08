@@ -16,7 +16,9 @@ def validate_entry(entry: Any) -> str | None:
     An entry is an exact id or a prefix pattern. Ids are ASCII printable without
     whitespace (callers normalise before). A prefix pattern is a non-empty prefix
     ending at a separator (. : / _ -) followed by a single trailing `*`: `deploy.*`
-    is valid, `deploy*`, `*` and `a*b` are not.
+    is valid, `deploy*`, `*` and `a*b` are not. Ids are opaque strings, never resolved
+    as paths or decoded: `/` only delimits segments, and a segment may not be empty,
+    `.` or `..` (a pattern stem may end in `/`), so `env/prod/../secret` is refused.
     """
     if not isinstance(entry, str) or not entry:
         return "entry must be a non-empty string"
@@ -27,8 +29,16 @@ def validate_entry(entry: Any) -> str | None:
     body = entry[:-1] if entry.endswith("*") else entry
     if "*" in body:
         return "`*` is allowed only as the final character of a prefix pattern"
-    if body is not entry and (not body or body[-1] not in SEPARATORS):
+    is_pattern = body is not entry
+    if is_pattern and (not body or body[-1] not in SEPARATORS):
         return f"prefix pattern must end at a separator ({SEPARATORS}) before `*`"
+    segments = body.split("/")
+    for position, segment in enumerate(segments):
+        if segment in (".", ".."):
+            return "`.` and `..` path segments are not allowed"
+        trailing_pattern_slash = is_pattern and position == len(segments) - 1 and len(segments) > 1
+        if not segment and not trailing_pattern_slash:
+            return "empty path segments are not allowed"
     return None
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import itertools
 
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from agent_warrant.scope import MAX_ENTRIES, covers, scope_narrows, validate_entry, validate_scope
@@ -171,7 +171,7 @@ prefixes = st.builds(
     st.text(alphabet="ab.:/_-", min_size=0, max_size=4),
     st.sampled_from(list(".:/_-")),
 )
-entries = st.one_of(concrete_ids, prefixes)
+entries = st.one_of(concrete_ids, prefixes).filter(lambda entry: validate_entry(entry) is None)
 scopes = st.builds(
     lambda tools, resources, cost: {"tools": tools, "resources": resources, "max_cost_per_call": cost},
     st.lists(entries, max_size=4),
@@ -211,6 +211,7 @@ def test_derived_children_narrow_and_never_widen(parent, suffix, keep_pattern, t
         "resources": [extend(entry, suffix, keep_pattern) for entry in parent["resources"]],
         "max_cost_per_call": parent["max_cost_per_call"],
     }
+    assume(validate_scope(child) is None)
     assert scope_narrows(parent, child)
     if covers(child, tool, resource):
         assert covers(parent, tool, resource)
@@ -236,3 +237,48 @@ def test_narrowing_never_widens_over_every_small_id(parent, child):
     if scope_narrows(parent, child):
         widened = [i for i in ALL_SMALL_IDS if covers(child, i, "r") and not covers(parent, i, "r")]
         assert widened == []
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "env/prod/../secret",
+        "..",
+        ".",
+        "env/..",
+        "env/./prod",
+        "../env",
+        "env//prod",
+        "/env",
+        "env/prod/",
+        "env/../*",
+        "env/./*",
+        "env//*",
+        "/*",
+        "//*",
+    ],
+)
+def test_path_traversal_and_empty_segments_are_refused(entry):
+    assert validate_entry(entry) is not None
+
+
+@pytest.mark.parametrize("entry", ["env/*", "env/prod/*", "env/prod", "a..b", "env/prod.v1", "a.b/c-d_e", "env/a:b"])
+def test_ordinary_slash_paths_are_accepted(entry):
+    assert validate_entry(entry) is None
+
+
+def test_traversal_id_is_never_covered_even_by_a_matching_prefix():
+    scope_with_prefix = scope(["read"], ["env/prod/*"])
+    assert covers(scope_with_prefix, "read", "env/prod/db")
+    assert not covers(scope_with_prefix, "read", "env/prod/../secret")
+    assert not covers(scope(["read"], ["env/*"]), "read", "env/../secret")
+
+
+def test_scope_with_a_traversal_entry_is_invalid():
+    assert validate_scope(scope(["read"], ["env/../secret"])) is not None
+    assert not scope_narrows(scope(["read"], ["env/*"]), scope(["read"], ["env/../secret"]))
+
+
+def test_ids_are_opaque_percent_escapes_are_not_resolved():
+    assert validate_entry("env/%2e%2e/secret") is None
+    assert covers(scope(["read"], ["env/prod/*"]), "read", "env/prod/%2e%2e/secret")

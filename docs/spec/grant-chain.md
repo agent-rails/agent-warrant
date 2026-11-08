@@ -64,6 +64,7 @@ Shape is exactly `{"tools": [...], "resources": [...], "max_cost_per_call": int}
 
 - Entry: an exact id, or a prefix pattern. Ids are ASCII printable (0x21 to 0x7E, no whitespace), at most 128 characters; callers normalise before.
 - A prefix pattern is a non-empty prefix whose last character is one of `.` `:` `/` `_` `-`, followed by a single final `*`. `deploy.*` is valid and covers `deploy.prod` but not `deployx`. `deploy*`, bare `*`, `a*b` and `**` are refused.
+- Ids are opaque strings, never path-resolved or percent-decoded. `/` delimits segments; a segment may not be empty, `.` or `..` (a prefix stem may end in `/`). `env/prod/../secret`, `env//prod`, `/env` and `env/prod/` are refused as entries and never covered as queries; `env/%2e%2e/x` is an ordinary id.
 - `covers(scope, tool, resource)`: both ids concrete (no `*`), each covered by some entry. An invalid scope covers nothing. This is the single matcher; it is not `fnmatch`.
 - `scope_narrows(parent, child)`: every child entry lies inside some parent entry (exact by equal id or covering prefix; prefix pattern only by a prefix pattern whose prefix it extends) and child cost is not above parent cost. An invalid scope on either side does not narrow.
 - The issuer trust policy does not bound `scope`; the root scope is whatever the listed issuer signed.
