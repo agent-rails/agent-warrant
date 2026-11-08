@@ -15,6 +15,7 @@ from .identity import decode_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
+from .scope import validate_scope
 from .trust import IssuerTrustPolicy
 
 RECORD_TYPE = "task-root"
@@ -27,7 +28,7 @@ CLOCK_SKEW_SECONDS = 5
 
 _STRING_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer", "subject")
 _INTEGER_FIELDS = ("budget", "max_depth", "issued_at", "expires_at")
-_BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS
+_BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS + ("scope",)
 
 
 def _b64u(data: bytes) -> str:
@@ -44,7 +45,7 @@ def _b64u_decode(data: str) -> bytes:
 @dataclass(frozen=True)
 class TaskRoot:
     """The signed root of a delegation: who is allowed to start a task, for which
-    tenant and principal, with what budget and delegation depth. `subject` is the
+    tenant and principal, with what scope, budget and delegation depth. `subject` is the
     first delegate's public key; `proof` is the ISSUER's signature over
     signing_input("task-root", 1, body). Verifying a TaskRoot proves the issuer
     signed these claims, not that any presenter holds `subject`'s key, and not that
@@ -59,6 +60,7 @@ class TaskRoot:
     max_depth: int
     issued_at: int
     expires_at: int
+    scope: dict[str, Any]
     subject: str
     issuer: str
     proof: str
@@ -108,6 +110,9 @@ def _validate_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
+    scope_refusal = validate_scope(fields["scope"])
+    if scope_refusal:
+        raise ValueError(f"scope: {scope_refusal}")
     if fields["max_depth"] > MAX_CHAIN_DEPTH:
         raise ValueError(f"max_depth must not exceed {MAX_CHAIN_DEPTH}")
     if fields["expires_at"] <= fields["issued_at"]:
@@ -135,6 +140,7 @@ def issue_task_root(
     max_depth: int,
     issued_at: int,
     expires_at: int,
+    scope: dict[str, Any],
     subject: str,
 ) -> TaskRoot:
     fields = {
@@ -146,6 +152,7 @@ def issue_task_root(
         "max_depth": max_depth,
         "issued_at": issued_at,
         "expires_at": expires_at,
+        "scope": scope,
         "subject": subject,
         "issuer": issuer,
     }
