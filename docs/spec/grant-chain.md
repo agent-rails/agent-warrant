@@ -143,6 +143,7 @@ Record type `chain-link`, version 1. Fields, all required, none optional:
 
 - Mandatory. Called last and once, so an invalid chain never triggers a lookup.
 - Returns `True` if the task, the tenant, the root or any listed link is revoked. Revoking a link revokes every chain that contains it and no chain that stops before it.
+- Only an explicit `False` means not revoked. Any other return value (`None`, `0`, `""`, ...) is treated as revoked, and any exception other than `RevocationSourceUnreachable` yields `valid=False` with reason `revocation check failed`. The same rule applies to `verify_root` and `verify`.
 - Raises `RevocationSourceUnreachable` when status cannot be determined; `verify_chain` then returns `valid=False`. Returning `False` on uncertainty is a checker bug.
 - The root is not checked separately by a `RevocationChecker`; the chain checker decides on `context.task_root`.
 

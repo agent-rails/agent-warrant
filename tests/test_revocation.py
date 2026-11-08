@@ -344,3 +344,41 @@ def test_http_revocation_list_fetcher_accepts_well_formed_url():
     fetcher = HttpRevocationListFetcher("https://example.com/revocations/team-a.json?v=2")
     assert fetcher._host == "example.com"
     assert fetcher._path == "/revocations/team-a.json?v=2"
+
+
+class OddChecker:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def is_revoked(self, issuer, grant_binding):
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+@pytest.mark.parametrize("outcome", [None, "", 0, 1, "no", [], object()])
+def test_grant_verify_treats_any_non_false_checker_result_as_revoked(outcome):
+    grant, proof, resolver, _ = _valid_grant_and_proof()
+    result = verify(grant.encode(), proof, resolver, now=1000.0, revocation_checker=OddChecker(outcome))
+    assert result.valid is False
+
+
+def test_grant_verify_accepts_only_an_explicit_false():
+    grant, proof, resolver, _ = _valid_grant_and_proof()
+    assert verify(grant.encode(), proof, resolver, now=1000.0, revocation_checker=OddChecker(False)).valid is True
+
+
+@pytest.mark.parametrize("error", [OSError("disk"), RuntimeError("boom"), KeyError("k"), TimeoutError()])
+def test_grant_verify_fails_closed_when_the_checker_raises(error):
+    grant, proof, resolver, _ = _valid_grant_and_proof()
+    result = verify(grant.encode(), proof, resolver, now=1000.0, revocation_checker=OddChecker(error))
+    assert result.valid is False
+    assert result.reason == "revocation check failed"
+
+
+def test_grant_verify_keeps_the_unreachable_reason():
+    grant, proof, resolver, _ = _valid_grant_and_proof()
+    result = verify(
+        grant.encode(), proof, resolver, now=1000.0, revocation_checker=OddChecker(RevocationSourceUnreachable("down"))
+    )
+    assert (result.valid, result.reason) == (False, "revocation status unavailable: down")

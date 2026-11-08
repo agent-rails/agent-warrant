@@ -433,3 +433,38 @@ def test_check_root_skips_revocation_and_verify_root_does_not(issuer_key, resolv
     checker = FakeRevocation({root.binding()})
     assert check_root(root.encode(), resolver, POLICY, NOW).valid is True
     assert verify_root(root.encode(), resolver, POLICY, checker, NOW).valid is False
+
+
+class OddChecker:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def is_revoked(self, issuer, binding):
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+@pytest.mark.parametrize("outcome", [None, "", 0, 1, "no", [], object()])
+def test_verify_root_treats_any_non_false_checker_result_as_revoked(issuer_key, resolver, outcome):
+    root = make_root(issuer_key)
+    result = verify_root(root.encode(), resolver, POLICY, OddChecker(outcome), NOW)
+    assert result.valid is False
+
+
+def test_verify_root_accepts_only_an_explicit_false(issuer_key, resolver):
+    root = make_root(issuer_key)
+    assert verify_root(root.encode(), resolver, POLICY, OddChecker(False), NOW).valid is True
+
+
+@pytest.mark.parametrize("error", [OSError("disk"), RuntimeError("boom"), KeyError("k"), TimeoutError()])
+def test_verify_root_fails_closed_when_the_checker_raises(issuer_key, resolver, error):
+    root = make_root(issuer_key)
+    result = verify_root(root.encode(), resolver, POLICY, OddChecker(error), NOW)
+    assert (result.valid, result.reason) == (False, "revocation check failed")
+
+
+def test_verify_root_keeps_the_unreachable_reason(issuer_key, resolver):
+    root = make_root(issuer_key)
+    result = verify_root(root.encode(), resolver, POLICY, OddChecker(RevocationSourceUnreachable("down")), NOW)
+    assert (result.valid, result.reason) == (False, "revocation status unavailable: down")

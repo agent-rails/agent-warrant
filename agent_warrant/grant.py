@@ -268,7 +268,9 @@ def verify(
             revoked = revocation_checker.is_revoked(grant.issuer, expected_binding)
         except RevocationSourceUnreachable as err:
             return VerifyResult(valid=False, reason=f"revocation status unavailable: {err}", checked_at=checked_at)
-        if revoked:
+        except Exception:
+            return VerifyResult(valid=False, reason="revocation check failed", checked_at=checked_at)
+        if revoked is not False:
             return VerifyResult(valid=False, reason="grant has been revoked", checked_at=checked_at)
 
     return VerifyResult(valid=True, reason="ok", grant=grant, checked_at=checked_at)

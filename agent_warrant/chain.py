@@ -297,7 +297,9 @@ class ChainContext:
 class ChainRevocationChecker(Protocol):
     """MUST return True when the task, tenant, root or any link in `context` is
     revoked, and MUST raise RevocationSourceUnreachable, never return False, when
-    status cannot be determined: verify_chain treats that exception as fail-closed."""
+    status cannot be determined: verify_chain treats that exception as fail-closed.
+    Only an explicit `False` means not revoked; any other return value, and any other
+    exception, makes the chain invalid."""
 
     def is_revoked(self, context: ChainContext) -> bool: ...
 
@@ -398,7 +400,9 @@ def verify_chain(
         revoked = revocation_checker.is_revoked(context)
     except RevocationSourceUnreachable as err:
         return fail(f"revocation status unavailable: {err}")
-    if revoked:
+    except Exception:
+        return fail("revocation check failed")
+    if revoked is not False:
         return fail("chain has been revoked")
 
     return ChainVerifyResult(valid=True, reason="ok", root=root, links=tuple(links), checked_at=now)
