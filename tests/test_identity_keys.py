@@ -128,3 +128,12 @@ def test_non_string_input_is_not_cached():
     assert is_valid_public_key(None) is False
     assert is_valid_public_key(b"x") is False
     assert identity._validate_encoded_key.cache_info().currsize == 0
+
+
+def test_a_str_subclass_is_not_accepted_as_a_key():
+    class Sneaky(str):
+        pass
+
+    key = encode_public_key(generate_keypair().public_key())
+    assert is_valid_public_key(key) is True
+    assert is_valid_public_key(Sneaky(key)) is False
