@@ -464,10 +464,14 @@ class TaskLedger:
                 raise Refused("chain has expired")
             reservation_expires_at = min(operation.expires_at, chain_expires_at)
             expected_parent = root_binding
+            parent_budget = budget
             for link in links:
                 if link.parent_hash != expected_parent or link.task_root != root_binding:
                     raise Refused("links do not form a chain from this task's root")
+                if link.budget > parent_budget:
+                    raise Refused("link budget exceeds its parent's budget")
                 expected_parent = link.binding()
+                parent_budget = link.budget
             if expected_parent != operation.leaf_binding:
                 raise Refused("operation leaf_binding is not the end of the chain")
             if self._revoked(connection, operation.tenant_id, operation.task_id, (root_binding, *bindings)):
