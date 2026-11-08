@@ -21,6 +21,18 @@ Not yet published to PyPI — install from GitHub:
 pip install git+https://github.com/agent-rails/agent-warrant.git
 ```
 
+## Development
+
+Dev dependencies (pytest, ruff, hypothesis) are the `dev` extra. Quote the extra so the shell does not expand the brackets:
+
+```bash
+uv venv
+uv pip install -e '.[dev]'    # or, inside any venv: pip install -e '.[dev]'
+.venv/bin/ruff check
+.venv/bin/ruff format --check
+.venv/bin/pytest -q
+```
+
 ## Quickstart
 
 ```python
