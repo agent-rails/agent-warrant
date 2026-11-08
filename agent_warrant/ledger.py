@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
@@ -93,6 +94,43 @@ class Refused(LedgerError):
 
 class LedgerUnavailable(LedgerError):
     """The database could not be read or written. Callers must fail closed."""
+
+
+def _check_file(path: Path, create: bool) -> None:
+    """Refuse a database path that is not a private regular file we own. The file is
+    opened with O_NOFOLLOW (no symlink is followed or created through) and inspected
+    with fstat: it must be a regular file, owned by the effective user, with mode
+    exactly 0600; its parent directory must not be group or other writable. An
+    existing file is never chmod-ed, only refused. With `create`, a missing file is
+    created with O_EXCL and mode 0600."""
+    try:
+        parent_mode = os.stat(path.parent).st_mode
+    except OSError as err:
+        raise LedgerUnavailable(f"cannot inspect parent directory: {err}") from err
+    if not stat.S_ISDIR(parent_mode) or parent_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise LedgerUnavailable("parent directory must exist and not be group or other writable")
+    descriptor = -1
+    try:
+        if create:
+            try:
+                descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                os.fchmod(descriptor, 0o600)
+            except FileExistsError:
+                descriptor = -1
+        if descriptor < 0:
+            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+    except OSError as err:
+        raise LedgerUnavailable(f"cannot open ledger file: {err}") from err
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        raise LedgerUnavailable("ledger path is not a regular file")
+    if info.st_uid != os.geteuid():
+        raise LedgerUnavailable("ledger file owner is not the current user")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise LedgerUnavailable(f"ledger file mode must be 0600, found {oct(stat.S_IMODE(info.st_mode))}")
 
 
 def _check_id(label: str, value: object) -> str:
@@ -211,7 +249,7 @@ class TaskLedger:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self._path = Path(path)
         try:
-            os.close(os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600))
+            _check_file(self._path, create=True)
             with self._transaction() as connection:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if version not in (0, SCHEMA_VERSION):
@@ -230,6 +268,7 @@ class TaskLedger:
             raise LedgerUnavailable(f"cannot open ledger: {err}") from err
 
     def _connect(self) -> sqlite3.Connection:
+        _check_file(self._path, create=False)
         connection = sqlite3.connect(self._path, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA synchronous = FULL")
@@ -311,7 +350,7 @@ class TaskLedger:
         try:
             with closing(self._connect()) as connection:
                 return self._revoked(connection, context.tenant_id, context.task_id, bindings)
-        except sqlite3.Error as err:
+        except (sqlite3.Error, LedgerUnavailable) as err:
             raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
 
     @staticmethod
