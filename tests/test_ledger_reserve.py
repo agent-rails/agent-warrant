@@ -502,3 +502,27 @@ def test_replay_after_chain_expiry_returns_the_stored_reservation(ledger, world)
     op = operation(world, links, expires_at=NOW + 10**6)
     ledger.reserve(op, links, NOW)
     assert ledger.reserve(op, links, NOW + 600).state == "released"
+
+
+def test_forged_first_link_with_a_cap_above_the_root_budget_is_refused(ledger, world):
+    link = dataclasses.replace(world.chain(1, budget=10)[0], budget=10**6, proof="AAAA")
+    with pytest.raises(Refused, match="link budget exceeds its parent's budget"):
+        ledger.reserve(operation(world, [link], cost=50), [link], NOW)
+    assert ledger.link_budget(link, NOW) is None
+    assert ledger.task_budget("t1", "task-1", NOW).spent == 0
+
+
+def test_forged_second_link_with_a_cap_above_its_parent_is_refused(ledger, world):
+    first, second = world.chain(2, budget=20)
+    forged = dataclasses.replace(second, budget=21)
+    with pytest.raises(Refused, match="link budget exceeds its parent's budget"):
+        ledger.reserve(operation(world, [first, forged]), [first, forged], NOW)
+    assert ledger.link_budget(first, NOW) is None
+
+
+def test_links_whose_caps_equal_or_narrow_their_parents_are_accepted(ledger, world):
+    first = world.chain(1, budget=100)[0]
+    assert first.budget == world.root.budget
+    assert ledger.reserve(operation(world, [first]), [first], NOW).state == "reserved"
+    narrower = world.chain(2, budget=40)
+    assert ledger.reserve(operation(world, narrower, op_id="op-2"), narrower, NOW).state == "reserved"
