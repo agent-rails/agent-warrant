@@ -66,7 +66,7 @@ def is_valid_public_key(encoded: object) -> bool:
     component but a large-order part are not detected. The result is a pure function
     of the string and is memoized (bounded); inputs longer than a valid key are
     refused before they reach the cache."""
-    if not isinstance(encoded, str) or len(encoded) > MAX_ENCODED_KEY_CHARACTERS:
+    if type(encoded) is not str or len(encoded) > MAX_ENCODED_KEY_CHARACTERS:
         return False
     return _validate_encoded_key(encoded)
 
