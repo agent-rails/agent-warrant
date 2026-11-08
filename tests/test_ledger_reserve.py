@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import dataclasses
+import sqlite3
 
 import pytest
 from test_ledger import NOW, World
 
 from agent_warrant.encoding import sha256_b64u
-from agent_warrant.ledger import Operation, Refused, TaskLedger
+from agent_warrant.exceptions import RevocationSourceUnreachable
+from agent_warrant.ledger import LedgerUnavailable, Operation, Refused, TaskLedger
 
 ARGS = sha256_b64u(b"args")
 
@@ -526,3 +528,80 @@ def test_links_whose_caps_equal_or_narrow_their_parents_are_accepted(ledger, wor
     assert ledger.reserve(operation(world, [first]), [first], NOW).state == "reserved"
     narrower = world.chain(2, budget=40)
     assert ledger.reserve(operation(world, narrower, op_id="op-2"), narrower, NOW).state == "reserved"
+
+
+@pytest.mark.parametrize("budget", [True, False, 2**64, 2**53, -1, 1.5, "10", None])
+def test_link_budget_must_be_an_integer_in_range(ledger, world, budget):
+    original = world.chain(1, budget=10)[0]
+    link = dataclasses.replace(original, budget=budget)
+    with pytest.raises(Refused, match="link budget must be an integer"):
+        ledger.reserve(operation(world, leaf_binding=original.binding()), [link], NOW)
+    assert ledger.task_budget("t1", "task-1", NOW).spent == 0
+
+
+@pytest.mark.parametrize("expires_at", [True, 2**64, -1, 1.5, "10", None])
+def test_link_expiry_must_be_an_integer_in_range(ledger, world, expires_at):
+    original = world.chain(1)[0]
+    link = dataclasses.replace(original, expires_at=expires_at)
+    with pytest.raises(Refused, match="link expires_at must be an integer"):
+        ledger.reserve(operation(world, leaf_binding=original.binding()), [link], NOW)
+
+
+def test_a_link_that_cannot_be_hashed_is_refused(ledger, world):
+    link = dataclasses.replace(world.chain(1)[0], scope={"tools": [1.5]})
+    with pytest.raises(Refused, match="malformed link"):
+        ledger.reserve(operation(world), [link], NOW)
+
+
+@pytest.mark.parametrize("now", [2**64, 2**53, -1, 1.5, True, None])
+def test_now_is_capped_at_the_interoperable_integer_range(ledger, world, now):
+    with pytest.raises(ValueError, match="now must be"):
+        ledger.reserve(operation(world), [], now)
+    with pytest.raises(ValueError, match="now must be"):
+        ledger.revoke_tenant("t1", now)
+    with pytest.raises(ValueError, match="now must be"):
+        ledger.task_budget("t1", "task-1", now)
+    with pytest.raises(ValueError, match="now must be"):
+        ledger.open_task(world.verified(), now)
+
+
+def test_now_at_the_range_limit_is_accepted(ledger, world):
+    assert ledger.task_budget("t1", "task-1", 2**53 - 1).spent == 0
+
+
+def test_a_constraint_violation_is_a_refusal_not_an_outage(ledger, world, tmp_path):
+    connection = sqlite3.connect(tmp_path / "ledger.db")
+    connection.execute(
+        "CREATE TRIGGER block_reservations BEFORE INSERT ON reservations BEGIN SELECT RAISE(ABORT, 'blocked'); END"
+    )
+    connection.close()
+    with pytest.raises(Refused, match="constraint"):
+        ledger.reserve(operation(world), [], NOW)
+    assert ledger.task_budget("t1", "task-1", NOW).spent == 0
+
+
+def test_an_unexpected_error_inside_a_transaction_is_ledger_unavailable(ledger, world, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(TaskLedger, "_release_expired", staticmethod(boom))
+    with pytest.raises(LedgerUnavailable, match="boom"):
+        ledger.reserve(operation(world), [], NOW)
+    with pytest.raises(LedgerUnavailable):
+        ledger.task_budget("t1", "task-1", NOW)
+
+
+def test_an_unexpected_error_while_checking_revocation_is_unreachable(ledger, world, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(TaskLedger, "_revoked", staticmethod(boom))
+    with pytest.raises(RevocationSourceUnreachable):
+        ledger.is_revoked(world.context())
+
+
+def test_reusing_a_registered_link_does_not_reinsert_it(ledger, world):
+    links = world.chain(1)
+    ledger.reserve(operation(world, links, op_id="a", cost=5), links, NOW)
+    ledger.reserve(operation(world, links, op_id="b", cost=5), links, NOW)
+    assert ledger.link_budget(links[0], NOW).spent == 10
