@@ -146,3 +146,96 @@ def test_signing_input_refuses_malformed_version(version):
 def test_decode_then_signing_input_roundtrip_is_stable():
     raw = json.dumps({"issued_at": 5, "id": "a"})
     assert signing_input("task-root", 1, decode(raw)) == signing_input("task-root", 1, {"id": "a", "issued_at": 5})
+
+
+MAX_SAFE = 2**53 - 1
+
+
+@pytest.mark.parametrize("escape", ["\\ud800", "\\udfff", "\\udc00", "\\ud83dx"])
+def test_rejects_lone_surrogate_in_value(escape):
+    with pytest.raises(ValueError, match="surrogate"):
+        decode('{"id":"' + escape + '","issued_at":1}')
+
+
+def test_rejects_lone_surrogate_in_key():
+    with pytest.raises(ValueError, match="surrogate"):
+        strict_decode('{"\\ud800":1}', required=(), optional={"\ud800"})
+
+
+def test_rejects_lone_surrogate_in_nested_value():
+    with pytest.raises(ValueError, match="surrogate"):
+        decode('{"id":"a","issued_at":1,"note":[{"k":"\\ud83d"}]}')
+
+
+def test_accepts_valid_surrogate_pair_escape():
+    assert decode('{"id":"\\ud83d\\ude00","issued_at":1}')["id"] == "\U0001f600"
+
+
+def test_rejects_lone_surrogate_in_str_input():
+    with pytest.raises(ValueError, match="surrogate"):
+        decode('{"id":"\ud800","issued_at":1}')
+
+
+def test_byte_cap_counts_utf8_bytes_for_str():
+    text = '{"id":"' + "中" * 30000 + '","issued_at":1}'
+    assert len(text) < MAX_STRICT_DECODE_BYTES
+    with pytest.raises(ValueError, match="byte limit"):
+        decode(text)
+
+
+def test_byte_cap_counts_utf8_bytes_for_bytes():
+    raw = ('{"id":"' + "中" * 30000 + '","issued_at":1}').encode()
+    with pytest.raises(ValueError, match="byte limit"):
+        decode(raw)
+
+
+@pytest.mark.parametrize("value", [MAX_SAFE, -MAX_SAFE, 0])
+def test_accepts_integers_in_interoperable_range(value):
+    assert decode('{"id":"a","issued_at":' + str(value) + "}")["issued_at"] == value
+
+
+@pytest.mark.parametrize("value", [MAX_SAFE + 1, -MAX_SAFE - 1, 10**30])
+def test_rejects_integer_outside_interoperable_range(value):
+    with pytest.raises(ValueError, match="outside"):
+        decode('{"id":"a","issued_at":' + str(value) + "}")
+
+
+def test_rejects_out_of_range_integer_in_non_integer_field():
+    with pytest.raises(ValueError, match="outside"):
+        decode('{"id":"a","issued_at":1,"note":[9007199254740992]}')
+
+
+def test_rejects_negative_zero():
+    with pytest.raises(ValueError, match="-0"):
+        decode('{"id":"a","issued_at":-0}')
+
+
+@pytest.mark.parametrize(
+    "raw", [' {"id":"a","issued_at":1}', '{"id":"a","issued_at":1}\n', '{"id":"a","issued_at":1} ']
+)
+def test_rejects_surrounding_whitespace(raw):
+    with pytest.raises(ValueError, match="whitespace"):
+        decode(raw)
+
+
+def test_rejects_trailing_data():
+    with pytest.raises(ValueError, match="not valid JSON"):
+        decode('{"id":"a","issued_at":1}x')
+
+
+def test_rejects_bom():
+    with pytest.raises(ValueError, match="not valid JSON"):
+        decode(b'\xef\xbb\xbf{"id":"a","issued_at":1}')
+
+
+def test_rejects_escaped_duplicate_key():
+    with pytest.raises(ValueError, match="duplicate key 'id'"):
+        decode('{"id":"a","\\u0069d":"b","issued_at":1}')
+
+
+@pytest.mark.parametrize("name", ["required", "optional", "integer_fields"])
+def test_rejects_str_for_field_set(name):
+    kwargs = {"required": (), "optional": (), "integer_fields": ()}
+    kwargs[name] = "id"
+    with pytest.raises(TypeError, match=name):
+        strict_decode("{}", **kwargs)
