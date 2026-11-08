@@ -113,7 +113,7 @@ def _check_file(path: Path, allow_empty: bool = False) -> os.stat_result:
     """Refuse a database path that is not an existing private regular file we own.
     The file is opened with O_NOFOLLOW (no symlink is followed) and never created, and
     inspected with fstat: it must be a regular file, owned by the effective user, with
-    mode exactly 0600, starting with the SQLite header (an empty file only when
+    mode exactly 0600, with a single hard link, starting with the SQLite header (an empty file only when
     `allow_empty`, while creating); its parent directory must not be group or other
     writable. A file is never chmod-ed here, only refused."""
     _check_parent(path)
@@ -134,6 +134,8 @@ def _check_file(path: Path, allow_empty: bool = False) -> os.stat_result:
         raise LedgerUnavailable("ledger file owner is not the current user")
     if stat.S_IMODE(info.st_mode) != 0o600:
         raise LedgerUnavailable(f"ledger file mode must be 0600, found {oct(stat.S_IMODE(info.st_mode))}")
+    if info.st_nlink != 1:
+        raise LedgerUnavailable("ledger file has multiple hard links")
     if header != SQLITE_MAGIC and not (allow_empty and info.st_size == 0):
         raise LedgerUnavailable("ledger file is not a SQLite database")
     return info
@@ -325,9 +327,21 @@ class TaskLedger:
         self._allow_empty = getattr(self, "_allow_empty", False)
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
-        info = _check_file(path, self._allow_empty)
-        self._identity = (info.st_dev, info.st_ino)
-        uri = f"file:{quote(str(path), safe='/')}?mode=rw"
+        self._closed = False
+        self._identity: tuple[int, int] | None = None
+        self._pid = os.getpid()
+        self._reconnect()
+
+    def _reconnect(self) -> None:
+        """Open the SQLite connection through the full file checks. The file's
+        (device, inode) is read before connecting, must match the identity this
+        ledger was first opened on, and must be unchanged after connecting."""
+        before = _check_file(self._path, self._allow_empty)
+        identity = (before.st_dev, before.st_ino)
+        if self._identity is not None and identity != self._identity:
+            raise LedgerUnavailable("ledger file was replaced")
+        uri = f"file:{quote(str(self._path), safe='/')}?mode=rw"
+        connection = None
         try:
             connection = sqlite3.connect(
                 uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
@@ -335,13 +349,26 @@ class TaskLedger:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             connection.execute("PRAGMA foreign_keys = ON")
+            after = _check_file(self._path, self._allow_empty)
+            if (after.st_dev, after.st_ino) != identity:
+                raise LedgerUnavailable("ledger file was replaced while connecting")
         except sqlite3.Error as err:
+            if connection is not None:
+                connection.close()
             raise LedgerUnavailable(f"ledger database error: {err}") from err
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            raise
+        self._identity = identity
         self._connection = connection
+        self._pid = os.getpid()
 
     def close(self) -> None:
-        """Release the SQLite connection. Idempotent; later calls raise LedgerUnavailable."""
+        """Release the SQLite connection for good. Idempotent; later calls raise
+        LedgerUnavailable."""
         with self._lock:
+            self._closed = True
             connection, self._connection = self._connection, None
         if connection is not None:
             connection.close()
@@ -352,27 +379,52 @@ class TaskLedger:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    def _drop(self, connection: sqlite3.Connection) -> None:
+        """Discard a connection that may be mid-transaction or otherwise unusable. The
+        next call reconnects through the full file checks."""
+        self._connection = None
+        try:
+            connection.close()
+        except Exception:
+            pass
+
     def _live_connection(self) -> sqlite3.Connection:
-        connection = self._connection
-        if connection is None:
+        if self._closed:
             raise LedgerUnavailable("ledger is closed")
+        if os.getpid() != self._pid:
+            raise LedgerUnavailable("ledger connection belongs to another process; open a new TaskLedger after fork")
+        if self._connection is None:
+            self._reconnect()
         info = _check_file(self._path, self._allow_empty)
         if (info.st_dev, info.st_ino) != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
-        return connection
+        return self._connection
+
+    def _rollback_or_drop(self, connection: sqlite3.Connection) -> None:
+        try:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            healthy = not connection.in_transaction
+        except Exception:
+            healthy = False
+        except BaseException:
+            self._drop(connection)
+            raise
+        if not healthy:
+            self._drop(connection)
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
             try:
                 connection = self._live_connection()
-                connection.execute("BEGIN IMMEDIATE")
                 try:
+                    connection.execute("BEGIN IMMEDIATE")
                     yield connection
+                    connection.execute("COMMIT")
                 except BaseException:
-                    connection.execute("ROLLBACK")
+                    self._rollback_or_drop(connection)
                     raise
-                connection.execute("COMMIT")
             except (Refused, LedgerUnavailable):
                 raise
             except sqlite3.IntegrityError as err:
