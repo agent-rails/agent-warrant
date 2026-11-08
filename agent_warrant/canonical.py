@@ -142,12 +142,20 @@ def signing_input(record_type: str, version: int, body: dict[str, Any]) -> bytes
     agent-warrant/<record_type>/v<version>, a NUL separator, then the canonical
     body. The tag is part of the signed bytes, so a signature over one record
     type never verifies as another type or version.
+
+    body must be a dict with str keys whose values are str, int, bool, None, list
+    or dict, recursively (no tuple, float or bytes), nested at most
+    MAX_STRICT_DECODE_DEPTH levels, with no lone surrogates and integers within
+    +/-(2**53-1). Signatures cover only these re-canonicalized bytes; the raw
+    input a body was decoded from is never hashed.
     """
     if not _RECORD_TYPE.fullmatch(record_type):
         raise ValueError(f"record type {record_type!r} must match {_RECORD_TYPE.pattern}")
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError(f"version must be a positive integer, got {version!r}")
-    _reject_floats(body)
+    if not isinstance(body, dict):
+        raise ValueError(f"body must be a dict, got {type(body).__name__}")
+    _check_value(body, 1, MAX_STRICT_DECODE_DEPTH)
     tag = f"agent-warrant/{record_type}/v{version}".encode()
     return tag + DOMAIN_SEPARATOR + canonicalize(body)
 
@@ -214,14 +222,3 @@ def _check_value(value: Any, depth: int, limit: int) -> None:
             _check_value(inner, depth + 1, limit)
         return
     raise ValueError(f"{type(value).__name__} is not an allowed value type")
-
-
-def _reject_floats(value: Any) -> None:
-    if isinstance(value, float):
-        raise ValueError(f"floats are not allowed in signed records: {value!r}")
-    if isinstance(value, dict):
-        for inner in value.values():
-            _reject_floats(inner)
-    elif isinstance(value, (list, tuple)):
-        for inner in value:
-            _reject_floats(inner)

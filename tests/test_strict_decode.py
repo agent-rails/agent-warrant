@@ -239,3 +239,67 @@ def test_rejects_str_for_field_set(name):
     kwargs[name] = "id"
     with pytest.raises(TypeError, match=name):
         strict_decode("{}", **kwargs)
+
+
+def test_signing_input_refuses_lone_surrogate_value():
+    with pytest.raises(ValueError, match="surrogate"):
+        signing_input("task-root", 1, {"a": "\ud800"})
+
+
+def test_signing_input_refuses_lone_surrogate_key():
+    with pytest.raises(ValueError, match="surrogate"):
+        signing_input("task-root", 1, {"\ud800": "a"})
+
+
+def test_signing_input_refuses_non_str_key():
+    with pytest.raises(ValueError, match="keys must be str, got int"):
+        signing_input("task-root", 1, {1: "x"})
+
+
+def test_signing_input_refuses_tuple_value():
+    with pytest.raises(ValueError, match="tuple is not an allowed value type"):
+        signing_input("task-root", 1, {"a": (1, 2)})
+
+
+@pytest.mark.parametrize("body", [[], [("a", 1)], "text", None, 5])
+def test_signing_input_refuses_non_dict_body(body):
+    with pytest.raises(ValueError, match="body must be a dict"):
+        signing_input("task-root", 1, body)
+
+
+def test_signing_input_refuses_non_json_value():
+    with pytest.raises(ValueError, match="bytes is not an allowed value type"):
+        signing_input("task-root", 1, {"a": b"x"})
+
+
+def nested(levels):
+    body = {}
+    cursor = body
+    for _ in range(levels - 1):
+        cursor["k"] = {}
+        cursor = cursor["k"]
+    return body
+
+
+def test_signing_input_accepts_depth_at_limit():
+    signing_input("task-root", 1, nested(8))
+
+
+def test_signing_input_refuses_depth_over_limit():
+    with pytest.raises(ValueError, match="nesting deeper than 8"):
+        signing_input("task-root", 1, nested(9))
+
+
+@pytest.mark.parametrize("value", [MAX_SAFE + 1, -MAX_SAFE - 1])
+def test_signing_input_refuses_out_of_range_integer(value):
+    with pytest.raises(ValueError, match="outside"):
+        signing_input("task-root", 1, {"a": [value]})
+
+
+@pytest.mark.parametrize("value", [MAX_SAFE, -MAX_SAFE])
+def test_signing_input_accepts_boundary_integers(value):
+    signing_input("task-root", 1, {"a": value})
+
+
+def test_signing_input_accepts_bool_none_list_dict_values():
+    signing_input("task-root", 1, {"a": True, "b": None, "c": [1, "x", {"d": False}]})
