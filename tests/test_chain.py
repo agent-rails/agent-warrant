@@ -914,3 +914,29 @@ def test_verify_chain_requires_audience_and_request_arguments(world):
             NeverRevoked(),
             NOW,
         )
+
+
+class OddChainChecker:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def is_revoked(self, context):
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+@pytest.mark.parametrize("outcome", [None, "", 0, 1, "no", [], object()])
+def test_verify_chain_treats_any_non_false_checker_result_as_revoked(world, outcome):
+    result = world.verify(world.chain(1), checker=OddChainChecker(outcome))
+    assert (result.valid, result.reason) == (False, "chain has been revoked")
+
+
+def test_verify_chain_accepts_only_an_explicit_false(world):
+    assert world.verify(world.chain(1), checker=OddChainChecker(False)).valid is True
+
+
+@pytest.mark.parametrize("error", [OSError("disk"), RuntimeError("boom"), KeyError("k"), TimeoutError()])
+def test_verify_chain_fails_closed_when_the_checker_raises(world, error):
+    result = world.verify(world.chain(1), checker=OddChainChecker(error))
+    assert (result.valid, result.reason) == (False, "revocation check failed")

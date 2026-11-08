@@ -218,7 +218,9 @@ def verify_root(
         revoked = revocation_checker.is_revoked(root.issuer, root.binding())
     except RevocationSourceUnreachable as err:
         return TaskRootResult(valid=False, reason=f"revocation status unavailable: {err}", checked_at=now)
-    if revoked:
+    except Exception:
+        return TaskRootResult(valid=False, reason="revocation check failed", checked_at=now)
+    if revoked is not False:
         return TaskRootResult(valid=False, reason="task root has been revoked", checked_at=now)
 
     return TaskRootResult(valid=True, reason="ok", root=root, checked_at=now)
