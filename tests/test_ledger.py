@@ -34,7 +34,7 @@ class NeverRevoked:
 
 
 class World:
-    def __init__(self, tenant="t1", task="task-1", budget=100, max_depth=3):
+    def __init__(self, tenant="t1", task="task-1", budget=100, max_depth=3, ttl=3600):
         self.issuer_key = generate_keypair()
         self.resolver = PinnedResolver({"issuer-a": self.issuer_key.public_key()})
         self.keys = [generate_keypair() for _ in range(5)]
@@ -48,7 +48,7 @@ class World:
             budget=budget,
             max_depth=max_depth,
             issued_at=NOW,
-            expires_at=NOW + 3600,
+            expires_at=NOW + ttl,
             scope=SCOPE,
             subject=encode_public_key(self.keys[0].public_key()),
         )
