@@ -15,6 +15,7 @@ from agent_warrant.chain import (
     verify_chain,
 )
 from agent_warrant.encoding import b64u
+from agent_warrant.exceptions import RevocationSourceUnreachable
 from agent_warrant.identity import encode_public_key, generate_keypair
 from agent_warrant.resolver import PinnedResolver
 from agent_warrant.task_root import issue_task_root
@@ -34,16 +35,32 @@ POLICY = IssuerTrustPolicy(
 
 
 class NeverRevoked:
-    def is_revoked(self, issuer, binding):
+    def __init__(self):
+        self.contexts = []
+
+    def is_revoked(self, context):
+        self.contexts.append(context)
         return False
 
 
 class Revoked:
-    def __init__(self, bindings):
+    def __init__(self, bindings=(), tasks=(), tenants=(), unreachable=False):
         self.bindings = set(bindings)
+        self.tasks = set(tasks)
+        self.tenants = set(tenants)
+        self.unreachable = unreachable
+        self.contexts = []
 
-    def is_revoked(self, issuer, binding):
-        return binding in self.bindings
+    def is_revoked(self, context):
+        self.contexts.append(context)
+        if self.unreachable:
+            raise RevocationSourceUnreachable("down")
+        return (
+            context.task_id in self.tasks
+            or context.tenant_id in self.tenants
+            or context.task_root in self.bindings
+            or any(binding in self.bindings for binding in context.link_bindings)
+        )
 
 
 def pub(key):
@@ -561,7 +578,78 @@ def test_unknown_key_in_link_fails(world):
 
 def test_revoked_root_fails(world):
     result = world.verify(world.chain(1), checker=Revoked({world.root.binding()}))
-    assert (result.valid, result.reason) == (False, "task root: task root has been revoked")
+    assert (result.valid, result.reason) == (False, "chain has been revoked")
+
+
+def test_revoked_leaf_link_fails(world):
+    links = world.chain(3)
+    result = world.verify(links, checker=Revoked({links[2].binding()}))
+    assert (result.valid, result.reason) == (False, "chain has been revoked")
+
+
+def test_revoked_mid_chain_link_fails_the_chain_through_it(world):
+    links = world.chain(3)
+    result = world.verify(links, checker=Revoked({links[1].binding()}))
+    assert (result.valid, result.reason) == (False, "chain has been revoked")
+
+
+def test_revoked_mid_chain_link_leaves_the_prefix_valid(world):
+    links = world.chain(3)
+    checker = Revoked({links[1].binding()})
+    assert world.verify(links[:1], checker=checker).valid is True
+
+
+def test_revoked_task_fails(world):
+    assert world.verify(world.chain(1), checker=Revoked(tasks={"task-1"})).valid is False
+
+
+def test_revoked_tenant_fails(world):
+    assert world.verify(world.chain(1), checker=Revoked(tenants={"t1"})).valid is False
+
+
+def test_other_task_and_tenant_revocations_do_not_apply(world):
+    assert world.verify(world.chain(1), checker=Revoked(tasks={"task-2"}, tenants={"t2"})).valid is True
+
+
+def test_unreachable_revocation_source_fails_closed(world):
+    result = world.verify(world.chain(2), checker=Revoked(unreachable=True))
+    assert result.valid is False
+    assert result.reason == "revocation status unavailable: down"
+
+
+def test_revocation_context_carries_task_tenant_root_and_every_link(world):
+    links = world.chain(3)
+    checker = NeverRevoked()
+    world.verify(links, checker=checker)
+    assert len(checker.contexts) == 1
+    context = checker.contexts[0]
+    assert context.task_id == "task-1"
+    assert context.tenant_id == "t1"
+    assert context.root_issuer == "issuer-a"
+    assert context.task_root == world.root.binding()
+    assert context.link_bindings == tuple(link.binding() for link in links)
+
+
+def test_revocation_is_not_consulted_for_an_invalid_chain(world):
+    checker = NeverRevoked()
+    world.verify(world.chain(1), holder_key=generate_keypair(), checker=checker)
+    world.verify(world.chain(1), now=NOW + 10**6, checker=checker)
+    assert checker.contexts == []
+
+
+@pytest.mark.parametrize("checker", [None, object(), "checker", lambda context: False])
+def test_revocation_checker_is_mandatory(world, checker):
+    proof = prove_leaf(world.root, world.keys[0], NOW).encode()
+    with pytest.raises(TypeError, match="ChainRevocationChecker"):
+        verify_chain(world.root.encode(), [], proof, world.resolver, POLICY, checker, NOW)
+
+
+def test_root_level_revocation_is_decided_only_by_the_chain_checker(world):
+    class RootOnly:
+        def is_revoked(self, context):
+            return context.task_root == world.root.binding()
+
+    assert world.verify(world.chain(1), checker=RootOnly()).valid is False
 
 
 def test_root_from_unlisted_issuer_fails(world):

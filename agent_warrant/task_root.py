@@ -153,17 +153,15 @@ class TaskRootResult:
     checked_at: int = 0
 
 
-def verify_root(
+def check_root(
     encoded: str,
     resolver: IssuerResolver,
     trust_policy: IssuerTrustPolicy,
-    revocation_checker: RevocationChecker,
     now: int,
 ) -> TaskRootResult:
-    """Never raises on attacker-controlled `encoded`; every failure is a
-    fail-closed result. No possession proof is checked. The trust policy is
-    mandatory: an issuer it does not list is refused before any key lookup, and
-    claims beyond the issuer's allowance are refused after its signature checks."""
+    """verify_root without the revocation lookup: decode, trust policy, issuer
+    signature, validity window and issuer allowance. For callers that run their own
+    revocation check (verify_chain). `valid=True` here does NOT mean unrevoked."""
     if not isinstance(trust_policy, IssuerTrustPolicy):
         raise TypeError("verify_root requires an IssuerTrustPolicy")
     if isinstance(now, bool) or not isinstance(now, int):
@@ -196,6 +194,25 @@ def verify_root(
     refusal = trust_policy.check_claims(root)
     if refusal:
         return TaskRootResult(valid=False, reason=refusal, checked_at=now)
+
+    return TaskRootResult(valid=True, reason="ok", root=root, checked_at=now)
+
+
+def verify_root(
+    encoded: str,
+    resolver: IssuerResolver,
+    trust_policy: IssuerTrustPolicy,
+    revocation_checker: RevocationChecker,
+    now: int,
+) -> TaskRootResult:
+    """Never raises on attacker-controlled `encoded`; every failure is a
+    fail-closed result. No possession proof is checked. The trust policy is
+    mandatory: an issuer it does not list is refused before any key lookup, and
+    claims beyond the issuer's allowance are refused after its signature checks."""
+    checked = check_root(encoded, resolver, trust_policy, now)
+    if not checked.valid or checked.root is None:
+        return checked
+    root = checked.root
 
     try:
         revoked = revocation_checker.is_revoked(root.issuer, root.binding())
