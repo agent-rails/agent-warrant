@@ -17,11 +17,15 @@ from agent_warrant.task_root import (
     issue_task_root,
     verify_root,
 )
-from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy
+from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 NOW = 1_000_000
 POLICY = IssuerTrustPolicy(
-    {"issuer-a": IssuerAllowance(tenants={"tenant-1"}, principals={"alice"}, max_budget=100, max_depth=3)}
+    {
+        "issuer-a": IssuerAllowance(
+            tenants={"tenant-1": TenantAllowance(principals={"alice"})}, max_budget=100, max_depth=3
+        )
+    }
 )
 
 
@@ -284,7 +288,7 @@ def test_boundary_values_accepted(issuer_key, resolver):
     wide = IssuerTrustPolicy(
         {
             "issuer-a": IssuerAllowance(
-                tenants={"tenant-1"}, principals={"alice"}, max_budget=0, max_depth=MAX_CHAIN_DEPTH
+                tenants={"tenant-1": TenantAllowance(principals={"alice"})}, max_budget=0, max_depth=MAX_CHAIN_DEPTH
             )
         }
     )

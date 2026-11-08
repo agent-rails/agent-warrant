@@ -8,11 +8,20 @@ import pytest
 from agent_warrant.identity import decode_public_key
 from agent_warrant.resolver import PinnedResolver
 from agent_warrant.task_root import TaskRoot, verify_root
-from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy
+from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 DOC = json.loads((Path(__file__).parent / "vectors" / "task_root.json").read_text(encoding="utf-8"))
 RESOLVER = PinnedResolver({issuer: decode_public_key(key) for issuer, key in DOC["issuers"].items()})
-POLICY = IssuerTrustPolicy({issuer: IssuerAllowance(**allowance) for issuer, allowance in DOC["policy"].items()})
+POLICY = IssuerTrustPolicy(
+    {
+        issuer: IssuerAllowance(
+            tenants={tenant: TenantAllowance(**rules) for tenant, rules in allowance["tenants"].items()},
+            max_budget=allowance["max_budget"],
+            max_depth=allowance["max_depth"],
+        )
+        for issuer, allowance in DOC["policy"].items()
+    }
+)
 
 
 class Revocation:

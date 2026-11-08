@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from .canonical import MAX_SAFE_INTEGER
@@ -40,32 +41,51 @@ def _limit(label: str, value: int) -> int:
 
 
 @dataclass(frozen=True, kw_only=True)
-class IssuerAllowance:
-    """What one issuer may assert in a TaskRoot. Tenants and principals match
-    exactly; a principal prefix applies only when listed in `principal_prefixes`
-    (no wildcards) and must end in one of : / . after a non-empty stem, so `svc:team-a:`
-    matches `svc:team-a:x` but never `svc:team-admin`. An empty set allows nothing."""
+class TenantAllowance:
+    """Which principals an issuer may assert for one tenant. Principals match
+    exactly; a prefix applies only when listed in `principal_prefixes`, must end in
+    one of : / . after a non-empty stem (no wildcards), so `svc:team-a:` matches
+    `svc:team-a:x` but never `svc:team-admin`. An empty set allows nothing."""
 
-    tenants: Iterable[str] = field(default_factory=frozenset)
     principals: Iterable[str] = field(default_factory=frozenset)
     principal_prefixes: Iterable[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "principals", _names("principals", self.principals))
+        object.__setattr__(self, "principal_prefixes", _prefixes(self.principal_prefixes))
+
+    def permits(self, principal: str) -> bool:
+        return principal in self.principals or any(principal.startswith(prefix) for prefix in self.principal_prefixes)
+
+
+@dataclass(frozen=True, kw_only=True)
+class IssuerAllowance:
+    """What one issuer may assert in a TaskRoot: a mapping tenant -> TenantAllowance
+    (principals are bound to their tenant, never pooled across tenants), plus
+    inclusive caps on budget and delegation depth."""
+
+    tenants: Mapping[str, TenantAllowance]
     max_budget: int
     max_depth: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "tenants", _names("tenants", self.tenants))
-        object.__setattr__(self, "principals", _names("principals", self.principals))
-        object.__setattr__(self, "principal_prefixes", _prefixes(self.principal_prefixes))
+        if not isinstance(self.tenants, Mapping):
+            raise TypeError("tenants must be a mapping of tenant id to TenantAllowance")
+        for tenant, tenant_allowance in self.tenants.items():
+            if not isinstance(tenant, str) or not tenant:
+                raise ValueError("tenant ids must be non-empty strings")
+            if not isinstance(tenant_allowance, TenantAllowance):
+                raise TypeError(f"allowance for tenant {tenant!r} must be a TenantAllowance")
+        object.__setattr__(self, "tenants", MappingProxyType(dict(self.tenants)))
         _limit("max_budget", self.max_budget)
         _limit("max_depth", self.max_depth)
 
     def refusal(self, root: TaskRoot) -> str | None:
-        if root.tenant_id not in self.tenants:
+        tenant_allowance = self.tenants.get(root.tenant_id)
+        if tenant_allowance is None:
             return f"issuer may not assert tenant {root.tenant_id!r}"
-        if root.principal not in self.principals and not any(
-            root.principal.startswith(prefix) for prefix in self.principal_prefixes
-        ):
-            return f"issuer may not assert principal {root.principal!r}"
+        if not tenant_allowance.permits(root.principal):
+            return f"issuer may not assert principal {root.principal!r} for tenant {root.tenant_id!r}"
         if root.budget > self.max_budget:
             return f"budget {root.budget} exceeds issuer allowance {self.max_budget}"
         if root.max_depth > self.max_depth:
