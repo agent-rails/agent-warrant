@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import binascii
-import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +8,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
+from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
 from .identity import is_valid_public_key
 from .issuer import MAX_TTL_SECONDS
@@ -30,17 +29,6 @@ _ID_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer")
 _STRING_FIELDS = _ID_FIELDS + ("subject",)
 _INTEGER_FIELDS = ("budget", "max_depth", "issued_at", "expires_at")
 _BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS + ("scope",)
-
-
-def _b64u(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _b64u_decode(data: str) -> bytes:
-    decoded = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
-    if _b64u(decoded) != data:
-        raise ValueError("not canonical unpadded base64url")
-    return decoded
 
 
 @dataclass(frozen=True)
@@ -74,24 +62,16 @@ class TaskRoot:
 
     def binding(self) -> str:
         """Stable identity of this root: sha256 of its domain-tagged signing bytes."""
-        return _b64u(hashlib.sha256(self.signing_bytes()).digest())
+        return sha256_b64u(self.signing_bytes())
 
     def encode(self) -> str:
-        return f"{_b64u(canonicalize(self.signable_fields()))}.{self.proof}"
+        return f"{b64u(canonicalize(self.signable_fields()))}.{self.proof}"
 
     @classmethod
     def decode(cls, encoded: str) -> TaskRoot:
-        if not isinstance(encoded, str):
-            raise ValueError(f"malformed task root: expected str, got {type(encoded).__name__}")
-        if len(encoded) > MAX_ENCODED_TASK_ROOT_BYTES:
-            raise ValueError(f"malformed task root: encoded length exceeds {MAX_ENCODED_TASK_ROOT_BYTES}")
-        body_b64, separator, proof = encoded.partition(".")
-        if not separator or not proof or "." in proof:
-            raise ValueError("malformed task root: expected exactly one '.' separator")
         try:
-            body = _b64u_decode(body_b64)
-            _b64u_decode(proof)
-        except (ValueError, binascii.Error) as err:
+            body, proof = unpack(encoded, MAX_ENCODED_TASK_ROOT_BYTES)
+        except ValueError as err:
             raise ValueError(f"malformed task root: {err}") from None
         fields = strict_decode(body, required=_BODY_FIELDS, integer_fields=_INTEGER_FIELDS)
         _validate_fields(fields)
@@ -158,7 +138,7 @@ def issue_task_root(
     }
     _validate_fields(fields)
     signature = issuer_key.sign(signing_input(RECORD_TYPE, RECORD_VERSION, fields))
-    return TaskRoot(**fields, proof=_b64u(signature))
+    return TaskRoot(**fields, proof=b64u(signature))
 
 
 @dataclass(frozen=True)
@@ -204,7 +184,7 @@ def verify_root(
         return TaskRootResult(valid=False, reason=f"unresolvable issuer: {err}", checked_at=now)
 
     try:
-        issuer_key.verify(_b64u_decode(root.proof), root.signing_bytes())
+        issuer_key.verify(b64u_decode(root.proof), root.signing_bytes())
     except (InvalidSignature, ValueError, binascii.Error):
         return TaskRootResult(valid=False, reason="invalid issuer signature", checked_at=now)
 
