@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from functools import lru_cache
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
@@ -53,14 +54,25 @@ def _double(point: tuple[int, int]) -> tuple[int, int]:
     return new_x, new_y
 
 
+MAX_ENCODED_KEY_CHARACTERS = 64
+KEY_CACHE_SIZE = 4096
+
+
 def is_valid_public_key(encoded: object) -> bool:
     """True only for the unique unpadded base64url form of a 32-byte Ed25519 public
     key that is safe to bind a holder to: y below the field prime, a point on the
     curve, no sign bit on x = 0, and not one of the 8 small-order points (for which
     a signature can be forged without the private key). Keys with a torsion
-    component but a large-order part are not detected."""
-    if not isinstance(encoded, str):
+    component but a large-order part are not detected. The result is a pure function
+    of the string and is memoized (bounded); inputs longer than a valid key are
+    refused before they reach the cache."""
+    if not isinstance(encoded, str) or len(encoded) > MAX_ENCODED_KEY_CHARACTERS:
         return False
+    return _validate_encoded_key(encoded)
+
+
+@lru_cache(maxsize=KEY_CACHE_SIZE)
+def _validate_encoded_key(encoded: str) -> bool:
     try:
         raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     except (ValueError, binascii.Error):

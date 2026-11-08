@@ -80,3 +80,51 @@ def test_non_zero_trailing_bits_are_refused():
     last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".index(valid[-1])
     alias = valid[:-1] + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[last ^ 1]
     assert is_valid_public_key(alias) is False
+
+
+def test_validation_is_cached_per_encoded_key():
+    from agent_warrant import identity
+
+    identity._validate_encoded_key.cache_clear()
+    key = encode_public_key(generate_keypair().public_key())
+    assert is_valid_public_key(key) is True
+    after_first = identity._validate_encoded_key.cache_info()
+    assert (after_first.hits, after_first.misses) == (0, 1)
+    assert is_valid_public_key(key) is True
+    assert is_valid_public_key(key) is True
+    after_repeat = identity._validate_encoded_key.cache_info()
+    assert (after_repeat.hits, after_repeat.misses) == (2, 1)
+
+
+def test_cached_results_do_not_leak_between_keys():
+    from agent_warrant import identity
+
+    identity._validate_encoded_key.cache_clear()
+    good = encode_public_key(generate_keypair().public_key())
+    weak = b64u(SMALL_ORDER["identity"])
+    for _ in range(3):
+        assert is_valid_public_key(good) is True
+        assert is_valid_public_key(weak) is False
+
+
+def test_cache_is_bounded():
+    from agent_warrant import identity
+
+    assert identity._validate_encoded_key.cache_info().maxsize == 4096
+
+
+def test_oversized_input_is_refused_without_being_cached():
+    from agent_warrant import identity
+
+    identity._validate_encoded_key.cache_clear()
+    assert is_valid_public_key("A" * 10_000_000) is False
+    assert identity._validate_encoded_key.cache_info().currsize == 0
+
+
+def test_non_string_input_is_not_cached():
+    from agent_warrant import identity
+
+    identity._validate_encoded_key.cache_clear()
+    assert is_valid_public_key(None) is False
+    assert is_valid_public_key(b"x") is False
+    assert identity._validate_encoded_key.cache_info().currsize == 0
