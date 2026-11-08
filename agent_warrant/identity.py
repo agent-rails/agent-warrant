@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
@@ -18,3 +19,14 @@ def encode_public_key(public_key: Ed25519PublicKey) -> str:
 def decode_public_key(encoded: str) -> Ed25519PublicKey:
     padded = encoded + "=" * (-len(encoded) % 4)
     return Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(padded))
+
+
+def is_canonical_public_key(encoded: object) -> bool:
+    """True only for the unique unpadded base64url form of a 32-byte Ed25519 key."""
+    if not isinstance(encoded, str):
+        return False
+    try:
+        public_key = decode_public_key(encoded)
+    except (ValueError, binascii.Error):
+        return False
+    return encode_public_key(public_key) == encoded
