@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import subprocess
+import sys
 
 import pytest
 from test_ledger import NOW, World
@@ -347,3 +349,156 @@ def test_overwriting_the_header_in_place_fails_closed(tmp_path):
         ledger.is_revoked(World().context())
     with pytest.raises(LedgerUnavailable, match="not a SQLite database"):
         ledger.revoke_tenant("t2", NOW)
+
+
+class FlakyConnection:
+    """Delegates to a real sqlite3 connection but raises on chosen statements."""
+
+    def __init__(self, real, fail_on):
+        self._real = real
+        self.fail_on = dict(fail_on)
+
+    def execute(self, sql, *args):
+        error = self.fail_on.pop(sql, None)
+        if error is not None:
+            raise error
+        return self._real.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+OTHER_PROCESS_WRITER = """
+import sys
+import agent_warrant.ledger as ledger_module
+ledger_module.BUSY_TIMEOUT_SECONDS = 3
+ledger = ledger_module.TaskLedger.open(sys.argv[1])
+ledger.revoke_tenant("other-process", 1_000_000)
+print("WROTE")
+"""
+
+
+def other_process_can_write(path):
+    result = subprocess.run(
+        [sys.executable, "-c", OTHER_PROCESS_WRITER, str(path)], capture_output=True, text=True, timeout=60
+    )
+    return result.returncode == 0 and result.stdout.strip() == "WROTE", result.stderr
+
+
+def test_interrupt_at_commit_does_not_leave_a_transaction_open(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    real = ledger._connection
+    ledger._connection = FlakyConnection(real, {"COMMIT": KeyboardInterrupt("signal at COMMIT")})
+    with pytest.raises(KeyboardInterrupt):
+        ledger.revoke_tenant("t1", NOW)
+    assert real.in_transaction is False
+    wrote, stderr = other_process_can_write(path)
+    assert wrote, stderr
+    ledger.revoke_tenant("t2", NOW)
+    assert ledger.is_revoked(World().context()) is False
+    assert ledger.is_revoked(World(tenant="t2").context()) is True
+
+
+def test_interrupted_commit_is_rolled_back_not_half_applied(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger._connection = FlakyConnection(ledger._connection, {"COMMIT": KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
+        ledger.revoke_tenant("t1", NOW)
+    assert ledger.is_revoked(World().context()) is False
+    reader = sqlite3.connect(path)
+    assert reader.execute("SELECT COUNT(*) FROM revoked_tenants").fetchone()[0] == 0
+    reader.close()
+
+
+def test_failed_rollback_closes_and_drops_the_connection_and_the_next_call_reconnects(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    real = ledger._connection
+
+    class RollbackFails(FlakyConnection):
+        def rollback(self):
+            raise OSError("rollback failed")
+
+    ledger._connection = RollbackFails(real, {"COMMIT": KeyboardInterrupt(), "ROLLBACK": OSError("no rollback")})
+    with pytest.raises(KeyboardInterrupt):
+        ledger.revoke_tenant("t1", NOW)
+    assert ledger._connection is None
+    wrote, stderr = other_process_can_write(path)
+    assert wrote, stderr
+    ledger.revoke_tenant("t2", NOW)
+    assert ledger._connection is not None
+    assert ledger.is_revoked(World(tenant="t2").context()) is True
+
+
+def test_an_interrupt_during_a_refusal_rollback_still_releases_the_lock(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger._connection = FlakyConnection(ledger._connection, {"ROLLBACK": KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
+        ledger.task_budget("t1", "no-such-task", NOW)
+    assert ledger._connection is None
+    wrote, stderr = other_process_can_write(path)
+    assert wrote, stderr
+    ledger.revoke_tenant("t3", NOW)
+
+
+def test_a_dropped_connection_reconnects_only_through_the_file_checks(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger._connection.close()
+    ledger._connection = None
+    os.chmod(path, 0o666)
+    with pytest.raises(LedgerUnavailable, match="mode"):
+        ledger.revoke_tenant("t1", NOW)
+    os.chmod(path, 0o600)
+    ledger.revoke_tenant("t1", NOW)
+
+
+def test_close_is_final_and_a_dropped_connection_is_not(tmp_path):
+    ledger = TaskLedger.create(private_dir(tmp_path) / "ledger.db")
+    ledger.close()
+    with pytest.raises(LedgerUnavailable, match="closed"):
+        ledger.revoke_tenant("t1", NOW)
+
+
+def test_file_swapped_between_the_check_and_the_connect_is_refused(tmp_path, monkeypatch):
+    import shutil
+
+    import agent_warrant.ledger as ledger_module
+
+    path = private_dir(tmp_path) / "ledger.db"
+    TaskLedger.create(path).close()
+    real_connect = sqlite3.connect
+
+    def swapping_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        copy = path.parent / "swap.db"
+        shutil.copy(path, copy)
+        os.chmod(copy, 0o600)
+        os.replace(copy, path)
+        return connection
+
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", swapping_connect)
+    with pytest.raises(LedgerUnavailable, match="replaced"):
+        TaskLedger.open(path)
+
+
+def test_ledger_used_from_a_forked_process_is_refused(tmp_path, monkeypatch):
+    ledger = TaskLedger.create(private_dir(tmp_path) / "ledger.db")
+    real_pid = os.getpid()
+    monkeypatch.setattr(os, "getpid", lambda: real_pid + 1)
+    with pytest.raises(LedgerUnavailable, match="another process"):
+        ledger.revoke_tenant("t1", NOW)
+    with pytest.raises(RevocationSourceUnreachable):
+        ledger.is_revoked(World().context())
+
+
+def test_a_hard_linked_database_is_refused(tmp_path):
+    directory = private_dir(tmp_path)
+    path = directory / "ledger.db"
+    TaskLedger.create(path).close()
+    os.link(path, directory / "other-name.db")
+    with pytest.raises(LedgerUnavailable, match="hard links"):
+        TaskLedger.open(path)
