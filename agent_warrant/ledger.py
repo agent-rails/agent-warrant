@@ -7,6 +7,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 from .canonical import MAX_SAFE_INTEGER, signing_input
 from .chain import ChainContext, ChainLink
@@ -97,41 +98,52 @@ class LedgerUnavailable(LedgerError):
     """The database could not be read or written. Callers must fail closed."""
 
 
-def _check_file(path: Path, create: bool) -> None:
-    """Refuse a database path that is not a private regular file we own. The file is
-    opened with O_NOFOLLOW (no symlink is followed or created through) and inspected
-    with fstat: it must be a regular file, owned by the effective user, with mode
-    exactly 0600; its parent directory must not be group or other writable. An
-    existing file is never chmod-ed, only refused. With `create`, a missing file is
-    created with O_EXCL and mode 0600."""
+def _check_parent(path: Path) -> None:
     try:
         parent_mode = os.stat(path.parent).st_mode
     except OSError as err:
         raise LedgerUnavailable(f"cannot inspect parent directory: {err}") from err
     if not stat.S_ISDIR(parent_mode) or parent_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
-    descriptor = -1
+
+
+def _check_file(path: Path) -> None:
+    """Refuse a database path that is not an existing private regular file we own.
+    The file is opened with O_NOFOLLOW (no symlink is followed) and never created, and
+    inspected with fstat: it must be a regular file, owned by the effective user, with
+    mode exactly 0600; its parent directory must not be group or other writable. A
+    file is never chmod-ed here, only refused."""
+    _check_parent(path)
     try:
-        if create:
-            try:
-                descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-                os.fchmod(descriptor, 0o600)
-            except FileExistsError:
-                descriptor = -1
-        if descriptor < 0:
-            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
-        info = os.fstat(descriptor)
+        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
     except OSError as err:
         raise LedgerUnavailable(f"cannot open ledger file: {err}") from err
+    try:
+        info = os.fstat(descriptor)
+    except OSError as err:
+        raise LedgerUnavailable(f"cannot inspect ledger file: {err}") from err
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        os.close(descriptor)
     if not stat.S_ISREG(info.st_mode):
         raise LedgerUnavailable("ledger path is not a regular file")
     if info.st_uid != os.geteuid():
         raise LedgerUnavailable("ledger file owner is not the current user")
     if stat.S_IMODE(info.st_mode) != 0o600:
         raise LedgerUnavailable(f"ledger file mode must be 0600, found {oct(stat.S_IMODE(info.st_mode))}")
+
+
+def _create_file(path: Path) -> None:
+    """Create a new empty ledger file with O_EXCL and mode 0600; never replaces a file
+    and never creates through a symlink."""
+    _check_parent(path)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError as err:
+        raise LedgerUnavailable(f"cannot create ledger file: {err}") from err
+    try:
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
 
 
 def _check_id(label: str, value: object) -> str:
@@ -248,29 +260,44 @@ class TaskLedger:
     signatures."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
-        self._path = Path(path)
-        try:
-            _check_file(self._path, create=True)
-            with self._transaction() as connection:
-                version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (0, SCHEMA_VERSION):
-                    raise LedgerUnavailable(f"unsupported ledger schema version {version}")
-                for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
-                    if statement.strip():
-                        connection.execute(statement)
-                for table in _INSERT_ONLY_TABLES:
-                    for action in ("UPDATE", "DELETE"):
-                        connection.execute(
-                            f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} BEFORE {action} ON {table} "
-                            "BEGIN SELECT RAISE(ABORT, 'revocations are insert-only'); END"
-                        )
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        except OSError as err:
-            raise LedgerUnavailable(f"cannot open ledger: {err}") from err
+        """Attach to an existing ledger. Never creates a file: a missing, replaced or
+        schema-less database raises LedgerUnavailable. Use `create` for a new ledger."""
+        self._path = Path(os.path.abspath(path))
+        with self._transaction() as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version == 0:
+            raise LedgerUnavailable("ledger database has no schema")
+        if version != SCHEMA_VERSION:
+            raise LedgerUnavailable(f"unsupported ledger schema version {version}")
+
+    @classmethod
+    def open(cls, path: str | os.PathLike[str]) -> TaskLedger:
+        return cls(path)
+
+    @classmethod
+    def create(cls, path: str | os.PathLike[str]) -> TaskLedger:
+        """Create a new private ledger file with the schema. Refuses an existing path."""
+        target = Path(os.path.abspath(path))
+        _create_file(target)
+        ledger = cls.__new__(cls)
+        ledger._path = target
+        with ledger._transaction() as connection:
+            for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
+                if statement.strip():
+                    connection.execute(statement)
+            for table in _INSERT_ONLY_TABLES:
+                for action in ("UPDATE", "DELETE"):
+                    connection.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} BEFORE {action} ON {table} "
+                        "BEGIN SELECT RAISE(ABORT, 'revocations are insert-only'); END"
+                    )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return ledger
 
     def _connect(self) -> sqlite3.Connection:
-        _check_file(self._path, create=False)
-        connection = sqlite3.connect(self._path, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
+        _check_file(self._path)
+        uri = f"file:{quote(str(self._path), safe='/')}?mode=rw"
+        connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA synchronous = FULL")
         connection.execute("PRAGMA foreign_keys = ON")
