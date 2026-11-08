@@ -6,14 +6,15 @@ Facts about `agent_warrant.ledger`. Chain and revocation context rules: `grant-c
 
 - Single host, single SQLite file (stdlib `sqlite3`). Several processes on the same host may share the file; hosts may not. A multi-host deployment needs a networked database behind the same interface.
 - One connection per call, WAL journal, `synchronous = FULL`, `foreign_keys = ON`, busy timeout 30 s, parameterized statements only. Every mutating call is one `BEGIN IMMEDIATE` transaction.
-- The file is created with mode 0600. Schema version is `PRAGMA user_version = 1`; any other non-zero version is refused.
+- `TaskLedger.create(path)` creates a new ledger: `O_CREAT | O_EXCL | O_NOFOLLOW`, mode 0600, schema written. It refuses an existing path. `TaskLedger.open(path)` (and `TaskLedger(path)`) attach to an existing ledger and never create a file; a missing file, an empty file or a database without the schema raises `LedgerUnavailable`, and `is_revoked` on a deleted database raises `RevocationSourceUnreachable` and does not recreate it. SQLite is opened with URI `mode=rw`. Schema version is `PRAGMA user_version = 1`; any other value is refused.
+- Before every database access the file is opened with `O_NOFOLLOW` and inspected with `fstat`: it must be a regular file, owned by the effective user, with mode exactly 0600 (an existing file with any other mode is refused, never chmod-ed). The parent directory must exist and must not be group or other writable (so a sticky `/tmp` is refused). The check and the SQLite open are separate steps; a process running as the same user can still swap the file between them, and can delete or rewrite it. Protecting against that needs a separate OS user and is not provided here.
 - The ledger does not verify signatures. It trusts its caller to pass only a valid `verify_root` result to `open_task` and only the links of a chain that `verify_chain` accepted to `reserve`. Code running as the same OS user can edit the file; protecting it needs a separate user (enforced mode) and is not provided here.
-- Time is the integer `now` the caller passes; the ledger never reads a clock.
+- Time is the integer `now` the caller passes, 0 to 2**53-1; the ledger never reads a clock.
 
 ## Errors
 
-- `Refused`: a policy refusal. Nothing was changed.
-- `LedgerUnavailable`: the database could not be read or written (including a corrupt file or unsupported schema). Callers fail closed.
+- `Refused`: a policy refusal, including a database constraint violation. Nothing was changed.
+- `LedgerUnavailable`: the database could not be read or written (a missing, replaced, corrupt or unsafe file, an unsupported schema, or any unexpected error inside a transaction). Callers fail closed.
 - `ValueError`: a malformed argument such as a non-integer `now` or a malformed id or binding.
 
 ## Tasks
@@ -40,9 +41,9 @@ Built by the trusted executor only. Fields: `op_id`, `tenant_id`, `task_id`, `le
 
 1. Expired `reserved` reservations of this task are released (below).
 2. If `(tenant_id, task_id, op_id)` already exists: the same digest returns the stored reservation in its current state (including `released`); a different digest is refused. No other check runs.
-3. Refused: verdict not allow; `now >= expires_at`; unknown task; links that do not chain from the task's root binding by `parent_hash` and `task_root`; `leaf_binding` not equal to the last link's binding (the root binding with no links); the root, any link, the task or the tenant revoked.
-4. Refused if `spent + cost > budget` for the task pool, or `spent + cost > cap` for any link. A link registers on first reserve with its `budget` as its cap; the same binding with different terms is refused.
-5. The cost is added to the pool and to every link in the chain, and the reservation is stored as `reserved` with the operation's `expires_at`.
+3. Refused: verdict not allow; `now >= expires_at`; unknown task; `now >= min(root.expires_at, every link.expires_at)` (`chain has expired`); links that do not chain from the task's root binding by `parent_hash` and `task_root`; `leaf_binding` not equal to the last link's binding (the root binding with no links); the root, any link, the task or the tenant revoked.
+4. Refused if a link's `budget` or `expires_at` is not an integer in 0 to 2**53-1, if a link's `budget` exceeds its parent's (the root's budget for the first link), if `spent + cost > budget` for the task pool, or if `spent + cost > cap` for any link. A link registers on first reserve with its `budget` as its cap; the same binding with different terms is refused. The budget check is defense in depth: the documented trust boundary is unchanged and a forged link is still the caller's problem.
+5. The cost is added to the pool and to every link in the chain, and the reservation is stored as `reserved` with `expires_at = min(operation.expires_at, root.expires_at, every link.expires_at)`.
 
 A malformed operation (including a negative, non-integer or boolean cost) and links of another tenant or task are refused before any database access.
 
@@ -56,7 +57,7 @@ reserved --mark_issued--> issued --mark_done--------------> done
 
 - `reserved`, `issued`, `done` and `outcome_unknown` hold their cost against the pool and every link cap.
 - `released` returns the cost to the pool and the links. It happens only to a `reserved` reservation whose `expires_at <= now`, on the next ledger access for that task (`reserve`, `mark_*`, `reservation`, `task_budget`, `link_budget`). A released reservation is never issued, and its `op_id` stays used.
-- `mark_issued` is recorded before a credential is minted. It is refused if the reservation was released, was already issued, or the root, a link, the task or the tenant is now revoked (the cost stays held).
+- `mark_issued` is recorded before a credential is minted. Because the reservation expires with the chain, it is refused at or after the chain's earliest expiry (the reservation has been released), and also if the reservation was released, was already issued, or the root, a link, the task or the tenant is now revoked (the cost stays held).
 - `mark_done` and `mark_outcome_unknown` are accepted only from `issued`. Any other transition is refused.
 - `issued` reservations are not released by expiry. `outcome_unknown` is never credited back automatically; reconciling it is an operator action outside this API.
 
