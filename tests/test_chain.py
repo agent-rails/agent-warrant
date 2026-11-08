@@ -5,16 +5,21 @@ import json
 
 import pytest
 
+from agent_warrant import chain as chain_module
 from agent_warrant.canonical import canonicalize, signing_input
 from agent_warrant.chain import (
     MAX_CHAIN_ENCODED_BYTES,
     ChainLink,
     LeafProof,
     delegate,
-    prove_leaf,
-    verify_chain,
 )
-from agent_warrant.encoding import b64u
+from agent_warrant.chain import (
+    prove_leaf as raw_prove_leaf,
+)
+from agent_warrant.chain import (
+    verify_chain as raw_verify_chain,
+)
+from agent_warrant.encoding import b64u, sha256_b64u
 from agent_warrant.exceptions import RevocationSourceUnreachable
 from agent_warrant.identity import encode_public_key, generate_keypair
 from agent_warrant.resolver import PinnedResolver
@@ -22,6 +27,8 @@ from agent_warrant.task_root import issue_task_root
 from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 NOW = 1_000_000
+AUDIENCE = "executor-1"
+REQUEST = sha256_b64u(b"request-1")
 SCOPE = {"tools": ["deploy.*", "read"], "resources": ["env/*"], "max_cost_per_call": 5}
 POLICY = IssuerTrustPolicy(
     {
@@ -32,6 +39,16 @@ POLICY = IssuerTrustPolicy(
         )
     }
 )
+
+
+def prove_leaf(leaf, holder_key, now, audience=AUDIENCE, request_digest=REQUEST):
+    return raw_prove_leaf(leaf, holder_key, now, audience=audience, request_digest=request_digest)
+
+
+def verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, **kwargs):
+    return raw_verify_chain(
+        *args, expected_audience=expected_audience, expected_request_digest=expected_request_digest, **kwargs
+    )
 
 
 class NeverRevoked:
@@ -793,6 +810,107 @@ def test_non_canonical_leaf_proof_body_is_refused(world):
 
 def test_weak_key_holder_proof_cannot_pass_for_a_valid_chain(world):
     proof = prove_leaf(world.root, world.keys[0], NOW)
-    forged = LeafProof(binding=proof.binding, iat=NOW, signature=b64u(bytes([1]) + bytes(63)))
+    forged = dataclasses.replace(proof, signature=b64u(bytes([1]) + bytes(63)))
     result = verify_chain(world.root.encode(), [], forged.encode(), world.resolver, POLICY, NeverRevoked(), NOW)
     assert result.valid is False
+
+
+def audience_verify(world, links, proof, audience=AUDIENCE, request=REQUEST, now=NOW, **kwargs):
+    return chain_module.verify_chain(
+        world.root.encode(),
+        [link.encode() for link in links],
+        proof,
+        world.resolver,
+        POLICY,
+        NeverRevoked(),
+        now,
+        expected_audience=audience,
+        expected_request_digest=request,
+        **kwargs,
+    )
+
+
+def audience_proof(world, links, holder, audience=AUDIENCE, request=REQUEST, now=NOW):
+    leaf = links[-1] if links else world.root
+    return chain_module.prove_leaf(leaf, holder, now, audience=audience, request_digest=request).encode()
+
+
+def test_proof_bound_to_audience_and_request_verifies(world):
+    links = world.chain(2)
+    result = audience_verify(world, links, audience_proof(world, links, world.keys[2]))
+    assert (result.valid, result.reason) == (True, "ok")
+
+
+def test_proof_for_another_audience_is_refused(world):
+    links = world.chain(1)
+    proof = audience_proof(world, links, world.keys[1], audience="executor-2")
+    result = audience_verify(world, links, proof)
+    assert (result.valid, result.reason) == (False, "leaf proof: audience mismatch")
+
+
+def test_proof_for_another_request_is_refused(world):
+    links = world.chain(1)
+    proof = audience_proof(world, links, world.keys[1], request=sha256_b64u(b"request-2"))
+    result = audience_verify(world, links, proof)
+    assert (result.valid, result.reason) == (False, "leaf proof: request digest mismatch")
+
+
+def test_captured_chain_and_proof_cannot_be_replayed_for_a_second_request(world):
+    links = world.chain(1)
+    proof = audience_proof(world, links, world.keys[1])
+    assert audience_verify(world, links, proof).valid is True
+    replay = audience_verify(world, links, proof, request=sha256_b64u(b"attacker-request"))
+    assert (replay.valid, replay.reason) == (False, "leaf proof: request digest mismatch")
+
+
+def test_captured_chain_and_proof_cannot_be_replayed_to_another_verifier(world):
+    links = world.chain(1)
+    proof = audience_proof(world, links, world.keys[1])
+    replay = audience_verify(world, links, proof, audience="other-verifier")
+    assert (replay.valid, replay.reason) == (False, "leaf proof: audience mismatch")
+
+
+def test_audience_and_request_are_covered_by_the_signature(world):
+    links = world.chain(1)
+    proof = LeafProof.decode(audience_proof(world, links, world.keys[1], audience="executor-2"))
+    swapped = dataclasses.replace(proof, audience=AUDIENCE)
+    result = audience_verify(world, links, swapped.encode())
+    assert (result.valid, result.reason) == (False, "leaf proof: invalid signature")
+    swapped = dataclasses.replace(proof, request_digest=sha256_b64u(b"other"))
+    assert audience_verify(world, links, swapped.encode(), audience="executor-2").valid is False
+
+
+def test_leaf_proof_round_trip_keeps_audience_and_request(world):
+    proof = chain_module.prove_leaf(world.root, world.keys[0], NOW, audience=AUDIENCE, request_digest=REQUEST)
+    assert LeafProof.decode(proof.encode()) == proof
+    assert (proof.audience, proof.request_digest) == (AUDIENCE, REQUEST)
+
+
+@pytest.mark.parametrize("audience", ["", "a b", "a\x00b", "café", None, 5, "x" * 257])
+def test_expected_audience_must_be_an_id(world, audience):
+    links = world.chain(1)
+    result = audience_verify(world, links, audience_proof(world, links, world.keys[1]), audience=audience)
+    assert result.valid is False
+    assert result.reason.startswith("expected_audience")
+
+
+@pytest.mark.parametrize("request_digest", ["", "short", None, 5, "B" * 43])
+def test_expected_request_digest_must_be_a_digest(world, request_digest):
+    links = world.chain(1)
+    result = audience_verify(world, links, audience_proof(world, links, world.keys[1]), request=request_digest)
+    assert result.valid is False
+    assert result.reason.startswith("expected_request_digest")
+
+
+def test_verify_chain_requires_audience_and_request_arguments(world):
+    links = world.chain(1)
+    with pytest.raises(TypeError):
+        chain_module.verify_chain(
+            world.root.encode(),
+            [links[0].encode()],
+            "p",
+            world.resolver,
+            POLICY,
+            NeverRevoked(),
+            NOW,
+        )

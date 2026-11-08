@@ -113,22 +113,28 @@ Record type `chain-link`, version 1. Fields, all required, none optional:
 
 ## Possession proof
 
-`LeafProof` is `{binding, iat}` plus a signature, transported like a link. The signed bytes are `signing_input("possession", 1, {"binding": ..., "iat": ...})` under the leaf subject's key (the TaskRoot's subject when there are no links). `binding` is the leaf record's binding, so a proof for one record does not satisfy another. The `possession` tag keeps a proof from verifying as a link or a root and the reverse.
+`LeafProof` is `{audience, binding, iat, request_digest}` plus a signature, transported like a link. The signed bytes are `signing_input("possession", 1, {"audience": ..., "binding": ..., "iat": ..., "request_digest": ...})` under the leaf subject's key (the TaskRoot's subject when there are no links).
+
+- `binding` is the leaf record's binding, so a proof for one record does not satisfy another.
+- `audience` is the id of the verifier the proof is addressed to (same alphabet and length as other ids). A proof presented to a different verifier is refused.
+- `request_digest` is the canonical base64url sha256 digest of the one request the proof authorizes (the executor uses the Operation digest). A proof presented with a different request is refused.
+- The `possession` tag keeps a proof from verifying as a link or a root and the reverse.
+- A proof is not single-use: the same chain and proof replayed to the same verifier for the same request within the age window is accepted. Making that effect happen once is the ledger's idempotency key, not this check.
 
 ## verify_chain
 
-`verify_chain(root_encoded, links_encoded, leaf_proof, resolver, trust_policy, revocation_checker, now, max_proof_age_seconds=60) -> ChainVerifyResult(valid, reason, root, links, checked_at)`
+`verify_chain(root_encoded, links_encoded, leaf_proof, resolver, trust_policy, revocation_checker, now, *, expected_audience, expected_request_digest, max_proof_age_seconds=60) -> ChainVerifyResult(valid, reason, root, links, checked_at)`
 
-- Never raises on attacker-controlled input; every failure is `valid=False` with a reason. `revocation_checker` that is `None` or lacks `is_revoked` raises `TypeError` (caller bug). `now` is an integer.
+- Never raises on attacker-controlled input; every failure is `valid=False` with a reason. `expected_audience` must be an id and `expected_request_digest` a canonical digest, else the result is `valid=False`. `revocation_checker` that is `None` or lacks `is_revoked` raises `TypeError` (caller bug). `now` is an integer.
 - Total encoded size (root plus links) is at most 262144 characters.
 - Order of checks, stopping at the first failure:
   1. the root, as in `verify_root` without the revocation lookup (decode, policy lists issuer, issuer signature, validity window, issuer allowance)
   2. number of links at most `root.max_depth`
   3. per link, in order: decode; same `task_id` and `tenant_id` as the root; `task_root` equals the root binding; `issuer` equals the previous subject; `parent_hash` equals the previous binding; `depth` is previous + 1; signature by `issuer`; scope narrows; budget not above previous; `expires_at` not after previous; `now < expires_at`; `issued_at` not before previous; `issued_at <= now + 5`
-  4. leaf proof: decodes; bound to the leaf binding; signature by the leaf subject; `iat <= now + 5`; `now - iat <= max_proof_age_seconds`
+  4. leaf proof: decodes; bound to the leaf binding; signature by the leaf subject; `audience` equals `expected_audience`; `request_digest` equals `expected_request_digest`; `iat <= now + 5`; `now - iat <= max_proof_age_seconds`
   5. revocation, once, with a `ChainContext`
 - Reordered, duplicated or skipped links fail the `parent_hash`/`issuer`/`depth` checks. A link from another task or tenant fails the `task_id`/`tenant_id` check; a link under a different root with the same task and tenant fails the `task_root` check.
-- A TaskRoot alone never yields a valid chain: the proof must be signed by the leaf subject's key, and links must be signed by the previous subject's key.
+- A TaskRoot alone never yields a valid chain: the proof must be signed by the leaf subject's key, and links must be signed by the previous subject's key. A captured chain and proof is useless to another verifier or for another request.
 - `valid=True` means the chain is authentic and narrowing, inside its validity window, not revoked, and the presenter holds the leaf key now. `leaf_scope` and `leaf_subject` expose the leaf's authority; applying them (`covers`) and charging budget are the caller's job.
 
 ## Chain revocation
