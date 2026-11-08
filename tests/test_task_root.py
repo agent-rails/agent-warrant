@@ -67,6 +67,7 @@ def make_fields(**overrides):
         "max_depth": 3,
         "issued_at": NOW,
         "expires_at": NOW + 300,
+        "scope": {"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5},
         "subject": encode_public_key(generate_keypair().public_key()),
     }
     fields.update(overrides)
@@ -274,6 +275,9 @@ def test_v1_grant_encoding_is_not_a_task_root(issuer_key, resolver):
         ({"task_id": ""}, "task_id must be a non-empty string"),
         ({"tenant_id": 5}, "tenant_id must be a non-empty string"),
         ({"purpose": "p" * 257}, "purpose is longer than"),
+        ({"scope": {"tools": ["*"], "resources": [], "max_cost_per_call": 1}}, "scope: tools"),
+        ({"scope": {"tools": [], "resources": []}}, "scope: scope keys"),
+        ({"scope": "all"}, "scope: scope must be an object"),
         ({"subject": "not-a-key"}, "subject is not a canonical"),
         ({"subject": "AAAA"}, "subject is not a canonical"),
     ],
@@ -406,3 +410,17 @@ def test_exactly_one_encoding_verifies(issuer_key, resolver):
     root = make_root(issuer_key)
     assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW).valid is True
     assert TaskRoot.decode(root.encode()).encode() == root.encode()
+
+
+def test_scope_is_covered_by_the_signature(issuer_key, resolver):
+    root = make_root(issuer_key)
+    widened = dataclasses.replace(
+        root, scope={"tools": ["deploy.*", "admin.*"], "resources": ["env/*"], "max_cost_per_call": 5}
+    )
+    result = verify_root(widened.encode(), resolver, POLICY, FakeRevocation(), NOW)
+    assert (result.valid, result.reason) == (False, "invalid issuer signature")
+
+
+def test_scope_round_trips(issuer_key):
+    root = make_root(issuer_key)
+    assert TaskRoot.decode(root.encode()).scope == root.scope
