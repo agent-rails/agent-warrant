@@ -940,3 +940,44 @@ def test_verify_chain_accepts_only_an_explicit_false(world):
 def test_verify_chain_fails_closed_when_the_checker_raises(world, error):
     result = world.verify(world.chain(1), checker=OddChainChecker(error))
     assert (result.valid, result.reason) == (False, "revocation check failed")
+
+
+@pytest.mark.parametrize("age", [-1, 1.5, True, None, "60", float("nan")])
+def test_max_proof_age_must_be_a_non_negative_integer(world, age):
+    links = world.chain(1)
+    result = world.verify(links, max_proof_age_seconds=age)
+    assert (result.valid, result.reason) == (False, "max_proof_age_seconds must be a non-negative integer")
+
+
+def test_zero_max_proof_age_accepts_only_a_proof_issued_now(world):
+    links = world.chain(1)
+    assert world.verify(links, max_proof_age_seconds=0).valid is True
+    assert world.verify(links, proof_iat=NOW - 1, max_proof_age_seconds=0).valid is False
+
+
+def test_delegate_refuses_a_task_root_parent_that_is_not_the_given_root(world):
+    other = World()
+    with pytest.raises(ValueError, match="parent task root is not the given root"):
+        delegate(
+            world.root,
+            other.root,
+            other.keys[0],
+            child_subject=pub(other.keys[1]),
+            scope=SCOPE,
+            budget=1,
+            ttl=10,
+            now=NOW,
+        )
+
+
+def test_delegate_refuses_a_non_root_first_argument(world):
+    with pytest.raises(TypeError, match="root must be a TaskRoot"):
+        delegate(
+            "root", world.root, world.keys[0], child_subject=pub(world.keys[1]), scope=SCOPE, budget=1, ttl=10, now=NOW
+        )
+
+
+@pytest.mark.parametrize("now", [-1, 1.5, True, None])
+def test_prove_leaf_refuses_a_malformed_time(world, now):
+    with pytest.raises(ValueError, match="now must be a non-negative integer"):
+        prove_leaf(world.root, world.keys[0], now)

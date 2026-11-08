@@ -110,7 +110,7 @@ Record type `chain-link`, version 1. Fields, all required, none optional:
 
 ## delegate
 
-`delegate(root, parent, parent_holder_key, *, child_subject, scope, budget, ttl, now) -> ChainLink`, where `parent` is the TaskRoot or the previous link. It raises `ValueError` for anything verification would refuse: a key that is not `parent.subject`, a parent from another root, depth over `root.max_depth`, a scope that does not narrow, budget above the parent's or not an integer, a parent not valid at `now`, an invalid `child_subject`, a non-positive `ttl`. `expires_at` is `min(now + ttl, parent.expires_at)`.
+`delegate(root, parent, parent_holder_key, *, child_subject, scope, budget, ttl, now) -> ChainLink`, where `parent` is the TaskRoot or the previous link. It raises `TypeError` if `root` is not a TaskRoot, and `ValueError` for anything verification would refuse: a TaskRoot `parent` that is not `root`, a key that is not `parent.subject`, a parent from another root, depth over `root.max_depth`, a scope that does not narrow, budget above the parent's or not an integer, a parent not valid at `now`, an invalid `child_subject`, a non-positive `ttl`. `expires_at` is `min(now + ttl, parent.expires_at)`.
 
 ## Possession proof
 
@@ -126,7 +126,7 @@ Record type `chain-link`, version 1. Fields, all required, none optional:
 
 `verify_chain(root_encoded, links_encoded, leaf_proof, resolver, trust_policy, revocation_checker, now, *, expected_audience, expected_request_digest, max_proof_age_seconds=60) -> ChainVerifyResult(valid, reason, root, links, checked_at)`
 
-- Never raises on attacker-controlled input; every failure is `valid=False` with a reason. `expected_audience` must be an id and `expected_request_digest` a canonical digest, else the result is `valid=False`. `revocation_checker` that is `None` or lacks `is_revoked` raises `TypeError` (caller bug). `now` is an integer.
+- Never raises on attacker-controlled input; every failure is `valid=False` with a reason. `expected_audience` must be an id, `expected_request_digest` a canonical digest and `max_proof_age_seconds` an integer >= 0, else the result is `valid=False`. `revocation_checker` that is `None` or lacks `is_revoked` raises `TypeError` (caller bug). `now` is an integer.
 - Total encoded size (root plus links) is at most 262144 characters.
 - Order of checks, stopping at the first failure:
   1. the root, as in `verify_root` without the revocation lookup (decode, policy lists issuer, issuer signature, validity window, issuer allowance)
