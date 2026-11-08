@@ -1,0 +1,211 @@
+{
+  "description": "Task-root vectors. issuers maps issuer id to its Ed25519 public key (base64url); verify_root must be called with a resolver pinned to these keys, the trust policy below, a revocation checker that reports the root as revoked only when revoked is true, and now. expect_valid and reason (substring) are the required outcome. Keys are derived from fixed seeds so signatures are reproducible. Signed bytes are signing_input('task-root', 1, body); the transport form is base64url(canonical body) + '.' + base64url(signature).",
+  "issuers": {
+    "issuer-a": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+    "issuer-b": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E"
+  },
+  "policy": {
+    "issuer-a": {
+      "tenants": [
+        "tenant-1"
+      ],
+      "principals": [],
+      "principal_prefixes": [
+        "svc:"
+      ],
+      "max_budget": 100,
+      "max_depth": 3
+    }
+  },
+  "root_fields": {
+    "issuer": "issuer-a",
+    "task_id": "task-1",
+    "tenant_id": "tenant-1",
+    "principal": "svc:deployer",
+    "purpose": "deploy",
+    "budget": 100,
+    "max_depth": 3,
+    "issued_at": 1000000,
+    "expires_at": 1000300,
+    "subject": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"
+  },
+  "binding": "cdoljIj9-5brBuIapem8uyEgsGbskf3tp6gAoSvOo0w",
+  "vectors": [
+    {
+      "name": "valid",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "valid-at-skew-boundary",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 999995,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "expired",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000300,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "task root has expired"
+    },
+    {
+      "name": "not-yet-valid",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 999994,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "task root is not yet valid"
+    },
+    {
+      "name": "revoked",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": true,
+      "expect_valid": false,
+      "reason": "task root has been revoked"
+    },
+    {
+      "name": "bad-signature",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.oI9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "invalid issuer signature"
+    },
+    {
+      "name": "tampered-body",
+      "encoded": "eyJidWRnZXQiOjk5LCJleHBpcmVzX2F0IjoxMDAwMzAwLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImlzc3VlciI6Imlzc3Vlci1hIiwibWF4X2RlcHRoIjozLCJwcmluY2lwYWwiOiJzdmM6ZGVwbG95ZXIiLCJwdXJwb3NlIjoiZGVwbG95Iiwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "invalid issuer signature"
+    },
+    {
+      "name": "unlisted-issuer",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYiIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.iw0ViHh9VuvZZxgK75iRM5Go2Zwj_M0i1cwYjXGgsSUEdeo-q88pQHaq-QxMGvvCFdgZFxzFwwx2a1xG6Vy2CQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "not in the trust policy"
+    },
+    {
+      "name": "tenant-beyond-allowance",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0yIn0.iEzBiY1PcEArdsot8nO6m_tFCZQBc0dvRvFRe5PxjQ8leNtJEFjKZlil8ZQk9RXlGZsi4TIZQWParFiCaeLJCQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert tenant"
+    },
+    {
+      "name": "principal-beyond-allowance",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.S4BQK1-abUMZiVwsaUToshYXSlU2HSZJ4Ir0xAyKpaDpkFy48HYkIutnJBSWv7ByJxyVyZ_jZ39Q8QMk1eToDQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal"
+    },
+    {
+      "name": "budget-beyond-allowance",
+      "encoded": "eyJidWRnZXQiOjEwMSwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.XtkckDwEYfyfk22OAmgjP4VRj3ygtJ-UiQA5wWbMKPOk-gd5Wt6tlHjeezNmZuzaW7xXl0aV_s3lLRsckrgiAA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "exceeds issuer allowance 100"
+    },
+    {
+      "name": "depth-beyond-allowance",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6NCwicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.PO8Zb2RsyCHKgKnZhOllpcxLXdR4tEC6Bqn6o9MA0y27qBiubgci_JhKZ3Yuh-RzvccJOTRXTiGhoYwANlM_Bw",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "exceeds issuer allowance 3"
+    },
+    {
+      "name": "chain-link-domain-tag",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.LbrfwoA7hC0Rr_Y3f5P3Ni5nXc_UacgUAZytJSIOvGZ1X208IRuDt7JDVkoeclSeTrqVob14LXh6BW6IE4N8BA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "invalid issuer signature"
+    },
+    {
+      "name": "task-root-version-2-tag",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.Qx0iDxm7Wi3W30bFy1asZrQJWvjw8XQLoW-96AlYE57qQRx6Tp3EP8CH4PfLIPUhwaquH3R0G8lPPN2uCdw9CA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "invalid issuer signature"
+    },
+    {
+      "name": "untagged-signature",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.EW0wewkB79aKMI0JoqrRKpjL1BeF02TMthRPQStoD9q7Xy8OGUEbZWxp4tf9LC3d0MpuAusqslio_65hI0OIBg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "invalid issuer signature"
+    },
+    {
+      "name": "unknown-key",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiZXh0cmEiOjEsImlzc3VlZF9hdCI6MTAwMDAwMCwiaXNzdWVyIjoiaXNzdWVyLWEiLCJtYXhfZGVwdGgiOjMsInByaW5jaXBhbCI6InN2YzpkZXBsb3llciIsInB1cnBvc2UiOiJkZXBsb3kiLCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.pgSzpYVPJxbkNEa5-06cegc7T16RWl7iL9d_CfZUmQ1Sd9Eb-Q6wJxr8aIEB7ZF_b5rgoSRpP05KxmAO11OhCg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "unknown keys: extra"
+    },
+    {
+      "name": "duplicate-key",
+      "encoded": "eyJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAidGFza19pZCI6ICJ0YXNrLTEiLCAidGVuYW50X2lkIjogInRlbmFudC0xIiwgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAiYnVkZ2V0IjogMTAwLCAibWF4X2RlcHRoIjogMywgImlzc3VlZF9hdCI6IDEwMDAwMDAsICJleHBpcmVzX2F0IjogMTAwMDMwMCwgInN1YmplY3QiOiAiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsICJ0YXNrX2lkIjogInRhc2stMiJ9.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "duplicate key"
+    },
+    {
+      "name": "float-timestamp",
+      "encoded": "eyJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAidGFza19pZCI6ICJ0YXNrLTEiLCAidGVuYW50X2lkIjogInRlbmFudC0xIiwgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAiYnVkZ2V0IjogMTAwLCAibWF4X2RlcHRoIjogMywgImlzc3VlZF9hdCI6IDEwMDAwMDAuMCwgImV4cGlyZXNfYXQiOiAxMDAwMzAwLCAic3ViamVjdCI6ICJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "floats are not allowed"
+    },
+    {
+      "name": "string-timestamp",
+      "encoded": "eyJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAidGFza19pZCI6ICJ0YXNrLTEiLCAidGVuYW50X2lkIjogInRlbmFudC0xIiwgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAiYnVkZ2V0IjogMTAwLCAibWF4X2RlcHRoIjogMywgImlzc3VlZF9hdCI6ICIxMDAwMDAwIiwgImV4cGlyZXNfYXQiOiAxMDAwMzAwLCAic3ViamVjdCI6ICJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "issued_at must be an integer"
+    },
+    {
+      "name": "negative-budget",
+      "encoded": "eyJidWRnZXQiOi0xLCJleHBpcmVzX2F0IjoxMDAwMzAwLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImlzc3VlciI6Imlzc3Vlci1hIiwibWF4X2RlcHRoIjozLCJwcmluY2lwYWwiOiJzdmM6ZGVwbG95ZXIiLCJwdXJwb3NlIjoiZGVwbG95Iiwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.ZSq6SWf_JN-lMUoZPvmVshziIXsPDiL7D5mQOg937Wvn0zJaRxQnKJ-ZQd1ycNcy0Pw0jv4Txmh_QlaE4vJDAg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "budget must be between"
+    },
+    {
+      "name": "expires-before-issued",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDAwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.OEcFGIe4aZOQYvsPqSZ_EY6EWn6LbS1CJA383EZ6_c5VRFoTZAVEzv-bReYkTl1NLcVyNf3AXG6wIvhGTkIkCw",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "expires_at must be after issued_at"
+    },
+    {
+      "name": "lifetime-over-cap",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTA4NjQwMSwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.GdaxeGKCdwZEUH8YFcQ3e7plP5SfPYo6MsCxNV5A7lRsHdk_y2nSpj_bPUKssGoIBPMw4ztBu_wlkkdRGiZrAg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "lifetime must not exceed"
+    }
+  ]
+}
