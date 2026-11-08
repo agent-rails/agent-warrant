@@ -39,7 +39,15 @@ class Checker:
 @pytest.mark.parametrize("vector", DOC["vectors"], ids=lambda v: v["name"])
 def test_chain_vector(vector):
     result = verify_chain(
-        vector["root"], vector["links"], vector["leaf_proof"], RESOLVER, POLICY, Checker(vector), vector["now"]
+        vector["root"],
+        vector["links"],
+        vector["leaf_proof"],
+        RESOLVER,
+        POLICY,
+        Checker(vector),
+        vector["now"],
+        expected_audience=vector["expected_audience"],
+        expected_request_digest=vector["expected_request_digest"],
     )
     assert result.valid is vector["expect_valid"]
     assert vector["reason"] in result.reason
@@ -48,7 +56,15 @@ def test_chain_vector(vector):
 def test_vector_bindings_are_pinned():
     valid = next(vector for vector in DOC["vectors"] if vector["name"] == "depth-3")
     result = verify_chain(
-        valid["root"], valid["links"], valid["leaf_proof"], RESOLVER, POLICY, Checker(valid), valid["now"]
+        valid["root"],
+        valid["links"],
+        valid["leaf_proof"],
+        RESOLVER,
+        POLICY,
+        Checker(valid),
+        valid["now"],
+        expected_audience=valid["expected_audience"],
+        expected_request_digest=valid["expected_request_digest"],
     )
     assert result.root.binding() == DOC["root_binding"]
     assert [link.binding() for link in result.links] == DOC["leaf_bindings"]

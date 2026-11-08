@@ -37,7 +37,7 @@ _LINK_HASH_FIELDS = ("task_root", "parent_hash")
 _LINK_KEY_FIELDS = ("issuer", "subject")
 _LINK_INTEGER_FIELDS = ("budget", "depth", "issued_at", "expires_at")
 _LINK_BODY_FIELDS = _LINK_STRING_FIELDS + _LINK_HASH_FIELDS + _LINK_KEY_FIELDS + _LINK_INTEGER_FIELDS + ("scope",)
-_PROOF_FIELDS = ("binding", "iat")
+_PROOF_FIELDS = ("audience", "binding", "iat", "request_digest")
 
 
 def _is_binding(value: Any) -> bool:
@@ -182,18 +182,38 @@ def delegate(
     return ChainLink(**fields, proof=b64u(signature))
 
 
+def _check_audience(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return "must be a non-empty string"
+    if len(value) > MAX_FIELD_CHARACTERS:
+        return f"is longer than {MAX_FIELD_CHARACTERS} characters"
+    if not all("!" <= character <= "~" for character in value):
+        return "must be ASCII printable without whitespace or control characters"
+    return None
+
+
 @dataclass(frozen=True)
 class LeafProof:
-    """Fresh proof that the presenter holds the key of the chain's leaf subject. It
-    is bound to the leaf record's binding and a timestamp, and signed under its own
-    domain tag (`possession`), so it cannot be replayed as a link or a root."""
+    """Fresh proof that the presenter holds the key of the chain's leaf subject,
+    signed under its own domain tag (`possession`) so it cannot be replayed as a link
+    or a root. It is bound to the leaf record's binding, the verifier it is addressed
+    to (`audience`), the digest of the one request it authorizes (`request_digest`)
+    and a timestamp, so a captured chain and proof cannot be used with another
+    verifier or another request."""
 
     binding: str
     iat: int
+    audience: str
+    request_digest: str
     signature: str
 
     def signable_fields(self) -> dict[str, Any]:
-        return {"binding": self.binding, "iat": self.iat}
+        return {
+            "audience": self.audience,
+            "binding": self.binding,
+            "iat": self.iat,
+            "request_digest": self.request_digest,
+        }
 
     def encode(self) -> str:
         return f"{b64u(canonicalize(self.signable_fields()))}.{self.signature}"
@@ -205,19 +225,35 @@ class LeafProof:
         except ValueError as err:
             raise ValueError(f"malformed leaf proof: {err}") from None
         fields = strict_decode(body, required=_PROOF_FIELDS, integer_fields=("iat",))
-        if not _is_binding(fields["binding"]):
-            raise ValueError("binding is not a canonical base64url sha256 digest")
+        for name in ("binding", "request_digest"):
+            if not _is_binding(fields[name]):
+                raise ValueError(f"{name} is not a canonical base64url sha256 digest")
+        problem = _check_audience(fields["audience"])
+        if problem:
+            raise ValueError(f"audience {problem}")
         if not 0 <= fields["iat"] <= MAX_SAFE_INTEGER:
             raise ValueError("iat is out of range")
         if canonicalize(fields) != body:
             raise ValueError("body is not in canonical form")
-        return cls(binding=fields["binding"], iat=fields["iat"], signature=signature)
+        return cls(signature=signature, **fields)
 
 
-def prove_leaf(leaf: TaskRoot | ChainLink, holder_key: Ed25519PrivateKey, now: int) -> LeafProof:
-    fields = {"binding": leaf.binding(), "iat": now}
+def prove_leaf(
+    leaf: TaskRoot | ChainLink,
+    holder_key: Ed25519PrivateKey,
+    now: int,
+    *,
+    audience: str,
+    request_digest: str,
+) -> LeafProof:
+    fields = {"audience": audience, "binding": leaf.binding(), "iat": now, "request_digest": request_digest}
+    problem = _check_audience(audience)
+    if problem:
+        raise ValueError(f"audience {problem}")
+    if not _is_binding(request_digest):
+        raise ValueError("request_digest is not a canonical base64url sha256 digest")
     signature = holder_key.sign(signing_input(POSSESSION_TYPE, POSSESSION_VERSION, fields))
-    return LeafProof(binding=fields["binding"], iat=now, signature=b64u(signature))
+    return LeafProof(signature=b64u(signature), **fields)
 
 
 @dataclass(frozen=True)
@@ -274,6 +310,9 @@ def verify_chain(
     trust_policy: IssuerTrustPolicy,
     revocation_checker: ChainRevocationChecker,
     now: int,
+    *,
+    expected_audience: str,
+    expected_request_digest: str,
     max_proof_age_seconds: int = DEFAULT_PROOF_MAX_AGE_SECONDS,
 ) -> ChainVerifyResult:
     """Never raises on attacker-controlled `root_encoded`, `links_encoded` or
@@ -290,6 +329,11 @@ def verify_chain(
         return fail("links must be a list of strings")
     if not isinstance(root_encoded, str) or not isinstance(leaf_proof, str):
         return fail("root and leaf proof must be strings")
+    audience_problem = _check_audience(expected_audience)
+    if audience_problem:
+        return fail(f"expected_audience {audience_problem}")
+    if not _is_binding(expected_request_digest):
+        return fail("expected_request_digest is not a canonical base64url sha256 digest")
     if len(root_encoded) + sum(len(item) for item in links_encoded) > MAX_CHAIN_ENCODED_BYTES:
         return fail("chain is larger than the size cap")
 
@@ -334,6 +378,10 @@ def verify_chain(
         )
     except (InvalidSignature, ValueError, binascii.Error):
         return fail("leaf proof: invalid signature")
+    if proof.audience != expected_audience:
+        return fail("leaf proof: audience mismatch")
+    if proof.request_digest != expected_request_digest:
+        return fail("leaf proof: request digest mismatch")
     if proof.iat > now + CLOCK_SKEW_SECONDS:
         return fail("leaf proof: issued in the future")
     if now - proof.iat > max_proof_age_seconds:
