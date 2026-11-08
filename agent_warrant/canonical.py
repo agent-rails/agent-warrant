@@ -68,6 +68,9 @@ MAX_STRICT_DECODE_BYTES = 65536
 MAX_STRICT_DECODE_DEPTH = 8
 DOMAIN_SEPARATOR = b"\x00"
 _RECORD_TYPE = re.compile(r"[a-z][a-z0-9-]*")
+MAX_SAFE_INTEGER = 2**53 - 1
+_SURROGATES = re.compile("[\ud800-\udfff]")
+_JSON_WHITESPACE = " \t\n\r"
 
 
 def strict_decode(
@@ -81,24 +84,34 @@ def strict_decode(
 ) -> dict[str, Any]:
     """Decode a JSON object for a new record type, refusing anything ambiguous.
 
-    Raises ValueError, with a specific message, on: input over max_bytes, invalid
-    JSON, a non-object top level, duplicate keys at any depth, floats anywhere
-    (including 1.0 and 1e3), NaN/Infinity, nesting past max_depth, keys outside
-    required + optional, missing required keys, and any integer_fields value that
-    is not an int (bool is refused).
+    Raises ValueError, with a specific message, on: input over max_bytes (counted
+    as UTF-8 bytes, also for str input), invalid UTF-8 or JSON, a BOM, leading or
+    trailing whitespace, a non-object top level, duplicate keys at any depth,
+    floats anywhere (including 1.0 and 1e3), NaN/Infinity, -0, integers outside
+    +/-(2**53-1), lone surrogates in keys or strings, nesting past max_depth, keys
+    outside required + optional, missing required keys, and any integer_fields
+    value that is not an int (bool is refused). required, optional and
+    integer_fields must not be a str (TypeError).
 
     Applies no Unicode normalisation: strings decode byte-for-byte as sent.
     """
-    required_set = frozenset(required)
-    allowed = required_set | frozenset(optional)
-    integers = frozenset(integer_fields)
-    if len(data) > max_bytes:
-        raise ValueError(f"input is {len(data)} bytes, over the {max_bytes} byte limit")
+    required_set = _field_set("required", required)
+    allowed = required_set | _field_set("optional", optional)
+    integers = _field_set("integer_fields", integer_fields)
     try:
-        text = data.decode("utf-8") if isinstance(data, bytes) else data
+        raw = data.encode("utf-8") if isinstance(data, str) else data
+    except UnicodeEncodeError:
+        raise ValueError("input contains a lone surrogate") from None
+    if len(raw) > max_bytes:
+        raise ValueError(f"input is {len(raw)} bytes, over the {max_bytes} byte limit")
+    try:
+        text = raw.decode("utf-8")
+        if text != text.strip(_JSON_WHITESPACE):
+            raise ValueError("input has leading or trailing whitespace")
         value = json.loads(
             text,
             object_pairs_hook=_reject_duplicate_keys,
+            parse_int=_parse_int,
             parse_float=_reject_float,
             parse_constant=_reject_constant,
         )
@@ -110,7 +123,7 @@ def strict_decode(
         raise ValueError(f"input is not valid JSON: {exc.msg}") from None
     if not isinstance(value, dict):
         raise ValueError(f"top level must be a JSON object, got {type(value).__name__}")
-    _check_depth(value, 1, max_depth)
+    _check_value(value, 1, max_depth)
     unknown = sorted(set(value) - allowed)
     if unknown:
         raise ValueError(f"unknown keys: {', '.join(unknown)}")
@@ -156,17 +169,51 @@ def _reject_constant(literal: str) -> float:
     raise ValueError(f"{literal} is not allowed")
 
 
-def _check_depth(value: Any, depth: int, limit: int) -> None:
-    if isinstance(value, dict):
-        children: Iterable[Any] = value.values()
-    elif isinstance(value, list):
-        children = value
-    else:
+def _field_set(name: str, value: Iterable[str]) -> frozenset[str]:
+    if isinstance(value, str):
+        raise TypeError(f"{name} must be a collection of field names, not a str")
+    return frozenset(value)
+
+
+def _parse_int(literal: str) -> int:
+    if literal == "-0":
+        raise ValueError("-0 is not allowed")
+    return int(literal)
+
+
+def _check_string(value: str) -> None:
+    if _SURROGATES.search(value):
+        raise ValueError("lone surrogate code point in string")
+
+
+def _check_value(value: Any, depth: int, limit: int) -> None:
+    if isinstance(value, bool) or value is None:
         return
-    if depth > limit:
-        raise ValueError(f"nesting deeper than {limit} levels")
-    for child in children:
-        _check_depth(child, depth + 1, limit)
+    if isinstance(value, str):
+        _check_string(value)
+        return
+    if isinstance(value, int):
+        if abs(value) > MAX_SAFE_INTEGER:
+            raise ValueError(f"integer {value} is outside +/-{MAX_SAFE_INTEGER}")
+        return
+    if isinstance(value, float):
+        raise ValueError(f"floats are not allowed: {value!r}")
+    if isinstance(value, dict):
+        if depth > limit:
+            raise ValueError(f"nesting deeper than {limit} levels")
+        for key, inner in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"keys must be str, got {type(key).__name__}")
+            _check_string(key)
+            _check_value(inner, depth + 1, limit)
+        return
+    if isinstance(value, list):
+        if depth > limit:
+            raise ValueError(f"nesting deeper than {limit} levels")
+        for inner in value:
+            _check_value(inner, depth + 1, limit)
+        return
+    raise ValueError(f"{type(value).__name__} is not an allowed value type")
 
 
 def _reject_floats(value: Any) -> None:
