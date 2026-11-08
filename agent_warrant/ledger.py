@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import threading
 from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -17,6 +18,7 @@ from .scope import validate_entry
 from .task_root import TaskRootResult
 
 SCHEMA_VERSION = 1
+SQLITE_MAGIC = b"SQLite format 3\x00"
 OPERATION_TYPE = "operation"
 OPERATION_VERSION = 1
 STATES = ("reserved", "issued", "done", "outcome_unknown", "released")
@@ -107,12 +109,13 @@ def _check_parent(path: Path) -> None:
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
 
 
-def _check_file(path: Path) -> None:
+def _check_file(path: Path, allow_empty: bool = False) -> os.stat_result:
     """Refuse a database path that is not an existing private regular file we own.
     The file is opened with O_NOFOLLOW (no symlink is followed) and never created, and
     inspected with fstat: it must be a regular file, owned by the effective user, with
-    mode exactly 0600; its parent directory must not be group or other writable. A
-    file is never chmod-ed here, only refused."""
+    mode exactly 0600, starting with the SQLite header (an empty file only when
+    `allow_empty`, while creating); its parent directory must not be group or other
+    writable. A file is never chmod-ed here, only refused."""
     _check_parent(path)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
@@ -120,6 +123,7 @@ def _check_file(path: Path) -> None:
         raise LedgerUnavailable(f"cannot open ledger file: {err}") from err
     try:
         info = os.fstat(descriptor)
+        header = os.pread(descriptor, len(SQLITE_MAGIC), 0)
     except OSError as err:
         raise LedgerUnavailable(f"cannot inspect ledger file: {err}") from err
     finally:
@@ -130,6 +134,9 @@ def _check_file(path: Path) -> None:
         raise LedgerUnavailable("ledger file owner is not the current user")
     if stat.S_IMODE(info.st_mode) != 0o600:
         raise LedgerUnavailable(f"ledger file mode must be 0600, found {oct(stat.S_IMODE(info.st_mode))}")
+    if header != SQLITE_MAGIC and not (allow_empty and info.st_size == 0):
+        raise LedgerUnavailable("ledger file is not a SQLite database")
+    return info
 
 
 def _create_file(path: Path) -> None:
@@ -256,8 +263,19 @@ class BudgetStatus:
 
 
 class TaskLedger:
-    """Single-host SQLite ledger of task budgets and revocations. One connection per
-    call, WAL journal, full synchronous commits, parameterized statements only.
+    """Single-host SQLite ledger of task budgets and revocations. One SQLite connection
+    is opened after the file checks and reused for the ledger's lifetime (WAL journal,
+    full synchronous commits, parameterized statements only). Every call still
+    re-inspects the file by path with fstat (regular file, owner, mode 0600, private
+    parent) and refuses if the path now points at a different file than the one
+    opened, so a deleted, replaced or loosened database fails closed.
+
+    Thread safety: the connection is opened with check_same_thread=False and every
+    call holds one lock, so a ledger may be shared between threads; calls serialize.
+    Do not share a ledger across fork(); open one per process. Several processes may
+    use the same file: writes are `BEGIN IMMEDIATE` transactions with a busy timeout.
+    Call close() (or use `with`) to release the connection.
+
     Revocations are insert-only: there is no un-revoke, and triggers abort any
     UPDATE or DELETE on the revocation tables. The ledger trusts its caller to pass
     only results of verify_root and chains from verify_chain; it does not re-verify
@@ -266,12 +284,14 @@ class TaskLedger:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         """Attach to an existing ledger. Never creates a file: a missing, replaced or
         schema-less database raises LedgerUnavailable. Use `create` for a new ledger."""
-        self._path = Path(os.path.abspath(path))
+        self._attach(Path(os.path.abspath(path)))
         with self._transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
+            self.close()
             raise LedgerUnavailable("ledger database has no schema")
         if version != SCHEMA_VERSION:
+            self.close()
             raise LedgerUnavailable(f"unsupported ledger schema version {version}")
 
     @classmethod
@@ -284,7 +304,8 @@ class TaskLedger:
         target = Path(os.path.abspath(path))
         _create_file(target)
         ledger = cls.__new__(cls)
-        ledger._path = target
+        ledger._allow_empty = True
+        ledger._attach(target)
         with ledger._transaction() as connection:
             for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
                 if statement.strip():
@@ -296,21 +317,55 @@ class TaskLedger:
                         "BEGIN SELECT RAISE(ABORT, 'revocations are insert-only'); END"
                     )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        ledger._allow_empty = False
         return ledger
 
-    def _connect(self) -> sqlite3.Connection:
-        _check_file(self._path)
-        uri = f"file:{quote(str(self._path), safe='/')}?mode=rw"
-        connection = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None)
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = FULL")
-        connection.execute("PRAGMA foreign_keys = ON")
+    def _attach(self, path: Path) -> None:
+        self._path = path
+        self._allow_empty = getattr(self, "_allow_empty", False)
+        self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+        info = _check_file(path, self._allow_empty)
+        self._identity = (info.st_dev, info.st_ino)
+        uri = f"file:{quote(str(path), safe='/')}?mode=rw"
+        try:
+            connection = sqlite3.connect(
+                uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
+            )
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = FULL")
+            connection.execute("PRAGMA foreign_keys = ON")
+        except sqlite3.Error as err:
+            raise LedgerUnavailable(f"ledger database error: {err}") from err
+        self._connection = connection
+
+    def close(self) -> None:
+        """Release the SQLite connection. Idempotent; later calls raise LedgerUnavailable."""
+        with self._lock:
+            connection, self._connection = self._connection, None
+        if connection is not None:
+            connection.close()
+
+    def __enter__(self) -> TaskLedger:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _live_connection(self) -> sqlite3.Connection:
+        connection = self._connection
+        if connection is None:
+            raise LedgerUnavailable("ledger is closed")
+        info = _check_file(self._path, self._allow_empty)
+        if (info.st_dev, info.st_ino) != self._identity:
+            raise LedgerUnavailable("ledger file was replaced")
         return connection
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        try:
-            with closing(self._connect()) as connection:
+        with self._lock:
+            try:
+                connection = self._live_connection()
                 connection.execute("BEGIN IMMEDIATE")
                 try:
                     yield connection
@@ -318,12 +373,12 @@ class TaskLedger:
                     connection.execute("ROLLBACK")
                     raise
                 connection.execute("COMMIT")
-        except (Refused, LedgerUnavailable):
-            raise
-        except sqlite3.IntegrityError as err:
-            raise Refused(f"ledger constraint violated: {err}") from err
-        except Exception as err:
-            raise LedgerUnavailable(f"ledger error: {err}") from err
+            except (Refused, LedgerUnavailable):
+                raise
+            except sqlite3.IntegrityError as err:
+                raise Refused(f"ledger constraint violated: {err}") from err
+            except Exception as err:
+                raise LedgerUnavailable(f"ledger error: {err}") from err
 
     def open_task(self, result: TaskRootResult, now: int) -> None:
         """Register a task from a valid verify_root result. Idempotent for the same
@@ -385,7 +440,8 @@ class TaskLedger:
         is revoked. A database failure raises RevocationSourceUnreachable."""
         bindings = (context.task_root, *context.link_bindings)
         try:
-            with closing(self._connect()) as connection:
+            with self._lock:
+                connection = self._live_connection()
                 return self._revoked(connection, context.tenant_id, context.task_id, bindings)
         except Exception as err:
             raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
