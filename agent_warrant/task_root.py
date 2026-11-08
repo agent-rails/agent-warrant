@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import base64
 import binascii
-import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,11 +8,13 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
+from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
 from .identity import is_valid_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
+from .scope import validate_scope
 from .trust import IssuerTrustPolicy
 
 RECORD_TYPE = "task-root"
@@ -28,24 +28,13 @@ CLOCK_SKEW_SECONDS = 5
 _ID_FIELDS = ("task_id", "tenant_id", "principal", "purpose", "issuer")
 _STRING_FIELDS = _ID_FIELDS + ("subject",)
 _INTEGER_FIELDS = ("budget", "max_depth", "issued_at", "expires_at")
-_BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS
-
-
-def _b64u(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _b64u_decode(data: str) -> bytes:
-    decoded = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
-    if _b64u(decoded) != data:
-        raise ValueError("not canonical unpadded base64url")
-    return decoded
+_BODY_FIELDS = _STRING_FIELDS + _INTEGER_FIELDS + ("scope",)
 
 
 @dataclass(frozen=True)
 class TaskRoot:
     """The signed root of a delegation: who is allowed to start a task, for which
-    tenant and principal, with what budget and delegation depth. `subject` is the
+    tenant and principal, with what scope, budget and delegation depth. `subject` is the
     first delegate's public key; `proof` is the ISSUER's signature over
     signing_input("task-root", 1, body). Verifying a TaskRoot proves the issuer
     signed these claims, not that any presenter holds `subject`'s key, and not that
@@ -60,6 +49,7 @@ class TaskRoot:
     max_depth: int
     issued_at: int
     expires_at: int
+    scope: dict[str, Any]
     subject: str
     issuer: str
     proof: str
@@ -72,24 +62,16 @@ class TaskRoot:
 
     def binding(self) -> str:
         """Stable identity of this root: sha256 of its domain-tagged signing bytes."""
-        return _b64u(hashlib.sha256(self.signing_bytes()).digest())
+        return sha256_b64u(self.signing_bytes())
 
     def encode(self) -> str:
-        return f"{_b64u(canonicalize(self.signable_fields()))}.{self.proof}"
+        return f"{b64u(canonicalize(self.signable_fields()))}.{self.proof}"
 
     @classmethod
     def decode(cls, encoded: str) -> TaskRoot:
-        if not isinstance(encoded, str):
-            raise ValueError(f"malformed task root: expected str, got {type(encoded).__name__}")
-        if len(encoded) > MAX_ENCODED_TASK_ROOT_BYTES:
-            raise ValueError(f"malformed task root: encoded length exceeds {MAX_ENCODED_TASK_ROOT_BYTES}")
-        body_b64, separator, proof = encoded.partition(".")
-        if not separator or not proof or "." in proof:
-            raise ValueError("malformed task root: expected exactly one '.' separator")
         try:
-            body = _b64u_decode(body_b64)
-            _b64u_decode(proof)
-        except (ValueError, binascii.Error) as err:
+            body, proof = unpack(encoded, MAX_ENCODED_TASK_ROOT_BYTES)
+        except ValueError as err:
             raise ValueError(f"malformed task root: {err}") from None
         fields = strict_decode(body, required=_BODY_FIELDS, integer_fields=_INTEGER_FIELDS)
         _validate_fields(fields)
@@ -113,6 +95,9 @@ def _validate_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
+    scope_refusal = validate_scope(fields["scope"])
+    if scope_refusal:
+        raise ValueError(f"scope: {scope_refusal}")
     if fields["max_depth"] > MAX_CHAIN_DEPTH:
         raise ValueError(f"max_depth must not exceed {MAX_CHAIN_DEPTH}")
     if fields["expires_at"] <= fields["issued_at"]:
@@ -135,6 +120,7 @@ def issue_task_root(
     max_depth: int,
     issued_at: int,
     expires_at: int,
+    scope: dict[str, Any],
     subject: str,
 ) -> TaskRoot:
     fields = {
@@ -146,12 +132,13 @@ def issue_task_root(
         "max_depth": max_depth,
         "issued_at": issued_at,
         "expires_at": expires_at,
+        "scope": scope,
         "subject": subject,
         "issuer": issuer,
     }
     _validate_fields(fields)
     signature = issuer_key.sign(signing_input(RECORD_TYPE, RECORD_VERSION, fields))
-    return TaskRoot(**fields, proof=_b64u(signature))
+    return TaskRoot(**fields, proof=b64u(signature))
 
 
 @dataclass(frozen=True)
@@ -166,17 +153,15 @@ class TaskRootResult:
     checked_at: int = 0
 
 
-def verify_root(
+def check_root(
     encoded: str,
     resolver: IssuerResolver,
     trust_policy: IssuerTrustPolicy,
-    revocation_checker: RevocationChecker,
     now: int,
 ) -> TaskRootResult:
-    """Never raises on attacker-controlled `encoded`; every failure is a
-    fail-closed result. No possession proof is checked. The trust policy is
-    mandatory: an issuer it does not list is refused before any key lookup, and
-    claims beyond the issuer's allowance are refused after its signature checks."""
+    """verify_root without the revocation lookup: decode, trust policy, issuer
+    signature, validity window and issuer allowance. For callers that run their own
+    revocation check (verify_chain). `valid=True` here does NOT mean unrevoked."""
     if not isinstance(trust_policy, IssuerTrustPolicy):
         raise TypeError("verify_root requires an IssuerTrustPolicy")
     if isinstance(now, bool) or not isinstance(now, int):
@@ -197,7 +182,7 @@ def verify_root(
         return TaskRootResult(valid=False, reason=f"unresolvable issuer: {err}", checked_at=now)
 
     try:
-        issuer_key.verify(_b64u_decode(root.proof), root.signing_bytes())
+        issuer_key.verify(b64u_decode(root.proof), root.signing_bytes())
     except (InvalidSignature, ValueError, binascii.Error):
         return TaskRootResult(valid=False, reason="invalid issuer signature", checked_at=now)
 
@@ -209,6 +194,25 @@ def verify_root(
     refusal = trust_policy.check_claims(root)
     if refusal:
         return TaskRootResult(valid=False, reason=refusal, checked_at=now)
+
+    return TaskRootResult(valid=True, reason="ok", root=root, checked_at=now)
+
+
+def verify_root(
+    encoded: str,
+    resolver: IssuerResolver,
+    trust_policy: IssuerTrustPolicy,
+    revocation_checker: RevocationChecker,
+    now: int,
+) -> TaskRootResult:
+    """Never raises on attacker-controlled `encoded`; every failure is a
+    fail-closed result. No possession proof is checked. The trust policy is
+    mandatory: an issuer it does not list is refused before any key lookup, and
+    claims beyond the issuer's allowance are refused after its signature checks."""
+    checked = check_root(encoded, resolver, trust_policy, now)
+    if not checked.valid or checked.root is None:
+        return checked
+    root = checked.root
 
     try:
         revoked = revocation_checker.is_revoked(root.issuer, root.binding())

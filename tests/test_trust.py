@@ -50,6 +50,7 @@ def issue(key, **overrides):
         "max_depth": 3,
         "issued_at": NOW,
         "expires_at": NOW + 300,
+        "scope": {"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5},
         "subject": encode_public_key(generate_keypair().public_key()),
     }
     fields.update(overrides)
