@@ -40,11 +40,11 @@ Built by the trusted executor only. Fields: `op_id`, `tenant_id`, `task_id`, `le
 
 1. Expired `reserved` reservations of this task are released (below).
 2. If `(tenant_id, task_id, op_id)` already exists: the same digest returns the stored reservation in its current state (including `released`); a different digest is refused. No other check runs.
-3. Refused: verdict not allow; `now >= expires_at`; unknown task; links of another tenant or task; links that do not chain from the task's root binding by `parent_hash` and `task_root`; `leaf_binding` not equal to the last link's binding (the root binding with no links); the root, any link, the task or the tenant revoked.
+3. Refused: verdict not allow; `now >= expires_at`; unknown task; links that do not chain from the task's root binding by `parent_hash` and `task_root`; `leaf_binding` not equal to the last link's binding (the root binding with no links); the root, any link, the task or the tenant revoked.
 4. Refused if `spent + cost > budget` for the task pool, or `spent + cost > cap` for any link. A link registers on first reserve with its `budget` as its cap; the same binding with different terms is refused.
 5. The cost is added to the pool and to every link in the chain, and the reservation is stored as `reserved` with the operation's `expires_at`.
 
-A malformed operation (including a negative, non-integer or boolean cost) is refused before any database access.
+A malformed operation (including a negative, non-integer or boolean cost) and links of another tenant or task are refused before any database access.
 
 ## State machine
 
