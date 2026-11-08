@@ -143,8 +143,12 @@ def delegate(
     ValueError, anything verify_chain would refuse: a key that is not the parent's
     subject, a scope that does not narrow, a budget above the parent's, a depth past
     the root's max_depth, or no remaining lifetime. Expiry is clamped to the parent's."""
+    if not isinstance(root, TaskRoot):
+        raise TypeError("root must be a TaskRoot")
     if not isinstance(parent, (TaskRoot, ChainLink)):
         raise TypeError("parent must be a TaskRoot or ChainLink")
+    if isinstance(parent, TaskRoot) and parent.binding() != root.binding():
+        raise ValueError("parent task root is not the given root")
     if isinstance(now, bool) or not isinstance(now, int):
         raise ValueError("now must be an integer")
     if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
@@ -246,6 +250,8 @@ def prove_leaf(
     audience: str,
     request_digest: str,
 ) -> LeafProof:
+    if isinstance(now, bool) or not isinstance(now, int) or now < 0:
+        raise ValueError("now must be a non-negative integer")
     fields = {"audience": audience, "binding": leaf.binding(), "iat": now, "request_digest": request_digest}
     problem = _check_audience(audience)
     if problem:
@@ -327,6 +333,12 @@ def verify_chain(
 
     if isinstance(now, bool) or not isinstance(now, int):
         return fail("now must be an integer")
+    if (
+        isinstance(max_proof_age_seconds, bool)
+        or not isinstance(max_proof_age_seconds, int)
+        or max_proof_age_seconds < 0
+    ):
+        return fail("max_proof_age_seconds must be a non-negative integer")
     if not isinstance(links_encoded, (list, tuple)) or not all(isinstance(item, str) for item in links_encoded):
         return fail("links must be a list of strings")
     if not isinstance(root_encoded, str) or not isinstance(leaf_proof, str):
