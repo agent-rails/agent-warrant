@@ -341,6 +341,30 @@
       "revoked": false,
       "expect_valid": false,
       "reason": "principal must be ASCII printable"
+    },
+    {
+      "name": "non-canonical-key-order",
+      "encoded": "eyJpc3N1ZXIiOiJpc3N1ZXItYSIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSIsInByaW5jaXBhbCI6InN2YzpkZXBsb3llciIsInB1cnBvc2UiOiJkZXBsb3kiLCJidWRnZXQiOjEwMCwibWF4X2RlcHRoIjozLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImV4cGlyZXNfYXQiOjEwMDAzMDAsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIn0.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "body is not in canonical form"
+    },
+    {
+      "name": "non-canonical-whitespace",
+      "encoded": "eyJidWRnZXQiOiAxMDAsICJleHBpcmVzX2F0IjogMTAwMDMwMCwgImlzc3VlZF9hdCI6IDEwMDAwMDAsICJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAibWF4X2RlcHRoIjogMywgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAic3ViamVjdCI6ICJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwgInRhc2tfaWQiOiAidGFzay0xIiwgInRlbmFudF9pZCI6ICJ0ZW5hbnQtMSJ9.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "body is not in canonical form"
+    },
+    {
+      "name": "non-canonical-escape",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6Ilx1MDA2NGVwbG95Iiwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.oY9eaI1_c1vZSv0rtcb77lctO-PFmNxhrpeK4d5VKNqIcRgjLCzqioyJhfm-yr-2CPNruk0e-yW3Z3FXhjdyDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "body is not in canonical form"
     }
   ]
 }

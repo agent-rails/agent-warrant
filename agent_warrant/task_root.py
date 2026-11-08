@@ -93,6 +93,8 @@ class TaskRoot:
             raise ValueError(f"malformed task root: {err}") from None
         fields = strict_decode(body, required=_BODY_FIELDS, integer_fields=_INTEGER_FIELDS)
         _validate_fields(fields)
+        if canonicalize(fields) != body:
+            raise ValueError("body is not in canonical form")
         return cls(**fields, proof=proof)
 
 
