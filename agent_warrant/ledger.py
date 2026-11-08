@@ -161,9 +161,13 @@ def _check_binding(value: object) -> str:
     raise ValueError("binding must be a canonical base64url sha256 digest")
 
 
+def _is_ledger_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_SAFE_INTEGER
+
+
 def _check_now(now: object) -> int:
-    if isinstance(now, bool) or not isinstance(now, int) or now < 0:
-        raise ValueError("now must be a non-negative integer")
+    if isinstance(now, bool) or not isinstance(now, int) or not 0 <= now <= MAX_SAFE_INTEGER:
+        raise ValueError(f"now must be an integer between 0 and {MAX_SAFE_INTEGER}")
     return now
 
 
@@ -314,8 +318,12 @@ class TaskLedger:
                     connection.execute("ROLLBACK")
                     raise
                 connection.execute("COMMIT")
-        except sqlite3.Error as err:
-            raise LedgerUnavailable(f"ledger database error: {err}") from err
+        except (Refused, LedgerUnavailable):
+            raise
+        except sqlite3.IntegrityError as err:
+            raise Refused(f"ledger constraint violated: {err}") from err
+        except Exception as err:
+            raise LedgerUnavailable(f"ledger error: {err}") from err
 
     def open_task(self, result: TaskRootResult, now: int) -> None:
         """Register a task from a valid verify_root result. Idempotent for the same
@@ -379,7 +387,7 @@ class TaskLedger:
         try:
             with closing(self._connect()) as connection:
                 return self._revoked(connection, context.tenant_id, context.task_id, bindings)
-        except (sqlite3.Error, LedgerUnavailable) as err:
+        except Exception as err:
             raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
 
     @staticmethod
@@ -439,8 +447,15 @@ class TaskLedger:
                 raise Refused("links must be ChainLink records")
             if (link.tenant_id, link.task_id) != (operation.tenant_id, operation.task_id):
                 raise Refused("a link belongs to a different tenant or task")
+            if not _is_ledger_integer(link.budget):
+                raise Refused(f"link budget must be an integer between 0 and {MAX_SAFE_INTEGER}")
+            if not _is_ledger_integer(link.expires_at):
+                raise Refused(f"link expires_at must be an integer between 0 and {MAX_SAFE_INTEGER}")
         digest = operation.digest()
-        bindings = tuple(link.binding() for link in links)
+        try:
+            bindings = tuple(link.binding() for link in links)
+        except (ValueError, TypeError) as err:
+            raise Refused(f"malformed link: {err}") from None
         with self._transaction() as connection:
             self._release_expired(connection, operation.tenant_id, operation.task_id, now)
             stored = self._read_reservation(connection, operation.tenant_id, operation.task_id, operation.op_id)
@@ -479,13 +494,16 @@ class TaskLedger:
             if spent + operation.cost > budget:
                 raise Refused(f"task budget exhausted: {budget - spent} remaining, cost {operation.cost}")
             for link, binding in zip(links, bindings, strict=True):
-                connection.execute(
-                    "INSERT OR IGNORE INTO links (binding, tenant_id, task_id, cap) VALUES (?, ?, ?, ?)",
-                    (binding, link.tenant_id, link.task_id, link.budget),
-                )
-                cap, link_spent, link_tenant, link_task = connection.execute(
+                registered = connection.execute(
                     "SELECT cap, spent, tenant_id, task_id FROM links WHERE binding = ?", (binding,)
                 ).fetchone()
+                if registered is None:
+                    connection.execute(
+                        "INSERT INTO links (binding, tenant_id, task_id, cap) VALUES (?, ?, ?, ?)",
+                        (binding, link.tenant_id, link.task_id, link.budget),
+                    )
+                    registered = (link.budget, 0, link.tenant_id, link.task_id)
+                cap, link_spent, link_tenant, link_task = registered
                 if (link_tenant, link_task, cap) != (link.tenant_id, link.task_id, link.budget):
                     raise Refused("link is registered with different terms")
                 if link_spent + operation.cost > cap:
