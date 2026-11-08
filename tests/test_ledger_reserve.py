@@ -447,3 +447,58 @@ def test_crash_between_reserve_and_issue_does_not_double_charge(tmp_path, world)
     again = second.reserve(op, [], NOW + 1)
     assert again.state == "reserved"
     assert second.task_budget("t1", "task-1", NOW + 1).spent == 10
+
+
+def test_reserve_is_refused_once_the_chain_has_expired_even_if_the_operation_has_not(ledger, world):
+    links = world.chain(1)
+    assert links[0].expires_at == NOW + 600
+    with pytest.raises(Refused, match="chain has expired"):
+        ledger.reserve(operation(world, links, expires_at=NOW + 10**6), links, NOW + 600)
+    assert ledger.task_budget("t1", "task-1", NOW + 600).spent == 0
+
+
+def test_reserve_is_refused_once_the_root_has_expired(tmp_path):
+    world = World(ttl=100)
+    ledger = TaskLedger(tmp_path / "ledger.db")
+    ledger.open_task(world.verified(), NOW)
+    assert ledger.reserve(operation(world, expires_at=NOW + 10**6), [], NOW + 99).state == "reserved"
+    with pytest.raises(Refused, match="chain has expired"):
+        ledger.reserve(operation(world, op_id="op-2", expires_at=NOW + 10**6), [], NOW + 100)
+
+
+def test_any_expired_link_in_the_chain_refuses_the_reservation(ledger, world):
+    links = world.chain(2)
+    short = dataclasses.replace(links[1], expires_at=NOW + 50)
+    with pytest.raises(Refused, match="chain has expired"):
+        ledger.reserve(operation(world, [links[0], short], expires_at=NOW + 10**6), [links[0], short], NOW + 50)
+
+
+def test_reservation_expiry_is_the_earliest_of_operation_and_chain(ledger, world):
+    links = world.chain(1)
+    reservation = ledger.reserve(operation(world, links, expires_at=NOW + 10**6), links, NOW)
+    assert reservation.expires_at == links[0].expires_at
+    sooner = ledger.reserve(operation(world, links, op_id="op-2", expires_at=NOW + 30), links, NOW)
+    assert sooner.expires_at == NOW + 30
+    root_only = ledger.reserve(operation(world, op_id="op-3", expires_at=NOW + 10**6), [], NOW)
+    assert root_only.expires_at == world.root.expires_at
+
+
+def test_mark_issued_succeeds_just_before_chain_expiry(ledger, world):
+    links = world.chain(1)
+    ledger.reserve(operation(world, links, expires_at=NOW + 10**6), links, NOW)
+    assert ledger.mark_issued("t1", "task-1", "op-1", NOW + 599).state == "issued"
+
+
+def test_mark_issued_is_refused_at_chain_expiry_even_if_the_operation_outlives_it(ledger, world):
+    links = world.chain(1)
+    ledger.reserve(operation(world, links, expires_at=NOW + 10**6), links, NOW)
+    with pytest.raises(Refused, match="cannot move a released reservation to issued"):
+        ledger.mark_issued("t1", "task-1", "op-1", NOW + 600)
+    assert ledger.task_budget("t1", "task-1", NOW + 600).spent == 0
+
+
+def test_replay_after_chain_expiry_returns_the_stored_reservation(ledger, world):
+    links = world.chain(1)
+    op = operation(world, links, expires_at=NOW + 10**6)
+    ledger.reserve(op, links, NOW)
+    assert ledger.reserve(op, links, NOW + 600).state == "released"

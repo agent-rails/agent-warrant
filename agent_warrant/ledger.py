@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     root_binding TEXT NOT NULL,
     budget INTEGER NOT NULL CHECK (budget >= 0),
     spent INTEGER NOT NULL DEFAULT 0 CHECK (spent >= 0 AND spent <= budget),
+    root_expires_at INTEGER NOT NULL,
     opened_at INTEGER NOT NULL,
     PRIMARY KEY (tenant_id, task_id)
 );
@@ -309,8 +310,9 @@ class TaskLedger:
                     raise Refused("a different task root is already open for this tenant and task")
                 return
             connection.execute(
-                "INSERT INTO tasks (tenant_id, task_id, root_binding, budget, opened_at) VALUES (?, ?, ?, ?, ?)",
-                (root.tenant_id, root.task_id, binding, root.budget, now),
+                "INSERT INTO tasks (tenant_id, task_id, root_binding, budget, root_expires_at, opened_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (root.tenant_id, root.task_id, binding, root.budget, root.expires_at, now),
             )
 
     def revoke(self, binding: str, now: int) -> None:
@@ -424,12 +426,16 @@ class TaskLedger:
             if now >= operation.expires_at:
                 raise Refused("operation has expired")
             task = connection.execute(
-                "SELECT root_binding, budget, spent FROM tasks WHERE tenant_id = ? AND task_id = ?",
+                "SELECT root_binding, budget, spent, root_expires_at FROM tasks WHERE tenant_id = ? AND task_id = ?",
                 (operation.tenant_id, operation.task_id),
             ).fetchone()
             if task is None:
                 raise Refused("unknown task")
-            root_binding, budget, spent = task
+            root_binding, budget, spent, root_expires_at = task
+            chain_expires_at = min((root_expires_at, *(link.expires_at for link in links)))
+            if now >= chain_expires_at:
+                raise Refused("chain has expired")
+            reservation_expires_at = min(operation.expires_at, chain_expires_at)
             expected_parent = root_binding
             for link in links:
                 if link.parent_hash != expected_parent or link.task_root != root_binding:
@@ -467,7 +473,7 @@ class TaskLedger:
                     digest,
                     operation.leaf_binding,
                     operation.cost,
-                    operation.expires_at,
+                    reservation_expires_at,
                     now,
                     now,
                 ),
@@ -485,7 +491,7 @@ class TaskLedger:
                 digest,
                 operation.cost,
                 "reserved",
-                operation.expires_at,
+                reservation_expires_at,
             )
 
     def _transition(
