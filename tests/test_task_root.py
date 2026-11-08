@@ -311,3 +311,26 @@ def test_static_revocation_checker_integration(issuer_key, resolver):
     )
     checker = StaticRevocationChecker(revocation_list, resolver, now=float(NOW))
     assert verify_root(root.encode(), resolver, POLICY, checker, NOW).reason == "task root has been revoked"
+
+
+WEAK_SUBJECTS = {
+    "identity": bytes([1]) + bytes(31),
+    "order-2": (2**255 - 20).to_bytes(32, "little"),
+    "order-4": bytes(32),
+    "order-8": bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+    "y-equals-p-plus-1": (2**255 - 18).to_bytes(32, "little"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_SUBJECTS))
+def test_issue_refuses_weak_subject_keys(issuer_key, name):
+    with pytest.raises(ValueError, match="subject is not a canonical"):
+        make_root(issuer_key, subject=b64u(WEAK_SUBJECTS[name]))
+
+
+@pytest.mark.parametrize("name", sorted(WEAK_SUBJECTS))
+def test_verify_refuses_signed_root_with_weak_subject(issuer_key, resolver, name):
+    fields = make_fields(subject=b64u(WEAK_SUBJECTS[name]))
+    result = verify_root(forge(issuer_key, fields), resolver, POLICY, FakeRevocation(), NOW)
+    assert result.valid is False
+    assert "subject is not a canonical" in result.reason

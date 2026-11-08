@@ -206,6 +206,70 @@
       "revoked": false,
       "expect_valid": false,
       "reason": "lifetime must not exceed"
+    },
+    {
+      "name": "subject-identity-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJBUUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.HyABbMQdYD2blfgaNU8-HGfwDeWkSVY0KtQ3Hmvr1vytupDfSCM_4fL2CJQRo92yffQr5M8SuI_gnuAY9aHIBw",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-2-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiI3UF9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.x6lhO_NYDFQIBT9A59kAYXUT8sldbOyugn9Vc386yCLCxvbBHELoAN9iIhOt4gJy1uFP_1XjdtbbQxa84Rn4DA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-4-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.zNINFl72rCngR0PuAkgJwSrMe0VJTzUy-75bmReiQL1n6khMskEg_68cQiPdiiNCde0G5sRvoRhAn8fEm3_WDw",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-4-point-sign-bit",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUlBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.sREKZ-XCxk8YAEzVrFKOrnVeu3GZoI7PP_c4hCgP62WAelN5jqhVXcoQJgcuVnqEYuYf58b1V4ou9hCsrQBZAQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-8-point",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJKdWlWajhLeUo3QkZ3X1NKOHUtWThOWGZyQVhUeGpNNXNUZ0NpRzFUX0FVIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.H63AwIT5Ko0LOHPE5oMgBqad_Cqvqg8_AfcsK7qy2UaRvDRc-8V4fwM4becTeZ3zqiACp75B9OLo_3Jo3V15Bw",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-order-8-point-sign-flipped",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJKdWlWajhLeUo3QkZ3X1NKOHUtWThOWGZyQVhUeGpNNXNUZ0NpRzFUX0lVIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.DOKUoEOyxbxwmixenxY5Sya6bTDF-RINi5Rp0X-Z3l_PdeER-h2pqRU9JYHbyRYcFm5SK4W865J75y4mdKaeAA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-y-equals-p-plus-1",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiI3dl9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.4JBopQ39Zm59KRNG2c0l_9NQ8fbZ3d3zBONLraKqFXD-asx8rMyTa-YGxnPDlVqUzeKzIr0-TfcoJtISrBhdBg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
+    },
+    {
+      "name": "subject-y-equals-p",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiI3Zl9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.rKuOZolMJf4Fxwl5P7KEKE8q03aZIE34lofLWrYhqkh-qwVqkyS5awxYl9kBgIpiKAkpObhJY7XU4LH7H8nJBQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "subject is not a canonical"
     }
   ]
 }
