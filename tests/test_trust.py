@@ -184,3 +184,22 @@ def test_policy_is_not_affected_by_later_mutation_of_input():
     policy = IssuerTrustPolicy(mapping)
     mapping.clear()
     assert run(generate_keypair(), policy).valid is True
+
+
+@pytest.mark.parametrize("prefix", ["svc:team-a", "svc", "svc-", "svc_", ":", "/", ".", "svc:*"])
+def test_prefix_without_delimiter_boundary_is_refused_at_construction(prefix):
+    with pytest.raises(ValueError, match="principal_prefixes"):
+        allowance(principals=set(), principal_prefixes={prefix})
+
+
+@pytest.mark.parametrize("prefix", ["svc:", "svc/", "svc."])
+def test_prefix_ending_in_delimiter_is_accepted(prefix):
+    allowance(principals=set(), principal_prefixes={prefix})
+
+
+def test_prefix_does_not_match_a_longer_sibling_segment():
+    policy = IssuerTrustPolicy({"issuer-a": allowance(principals=set(), principal_prefixes={"svc:team-a:"})})
+    key = generate_keypair()
+    assert run(key, policy, principal="svc:team-a:deployer").valid is True
+    assert run(key, policy, principal="svc:team-admin").valid is False
+    assert run(key, policy, principal="svc:team-a").valid is False
