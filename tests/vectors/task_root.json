@@ -6,13 +6,20 @@
   },
   "policy": {
     "issuer-a": {
-      "tenants": [
-        "tenant-1"
-      ],
-      "principals": [],
-      "principal_prefixes": [
-        "svc:"
-      ],
+      "tenants": {
+        "tenant-1": {
+          "principals": [],
+          "principal_prefixes": [
+            "svc:"
+          ]
+        },
+        "tenant-3": {
+          "principals": [
+            "alice"
+          ],
+          "principal_prefixes": []
+        }
+      },
       "max_budget": 100,
       "max_depth": 3
     }
@@ -270,6 +277,38 @@
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
+    },
+    {
+      "name": "tenant-bound-principal-valid",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTMifQ.a3TImLCNzOSZVQOWdB6spBxsGt3vteUDwNnkILDUIkjsec6fhcsddPBVtDKJugdViH_W1B6WmG3Ept_17UL2AA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "principal-of-another-tenant",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0zIn0.EQEhn4FzBU7SayvNC9RPSELNkO7bmWVKKLjY5vEQCFP37VKr0R_Z10KIkK38uHYSpW9DGLLokSAzV-JzghtTCg",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal 'svc:deployer' for tenant 'tenant-3'"
+    },
+    {
+      "name": "principal-prefix-of-another-tenant",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.S4BQK1-abUMZiVwsaUToshYXSlU2HSZJ4Ir0xAyKpaDpkFy48HYkIutnJBSWv7ByJxyVyZ_jZ39Q8QMk1eToDQ",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal 'alice' for tenant 'tenant-1'"
+    },
+    {
+      "name": "prefix-sibling-segment",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjLWFkbWluIiwicHVycG9zZSI6ImRlcGxveSIsInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.SiYaRbPNOQWrQl3fF5cRI1hXTZQGy1v6NZSUoAKGUxH0ruqZgBOFvSd64HA6_MNWf9i9BAaSkqgcb1Gp6lVqDA",
+      "now": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "may not assert principal 'svc-admin'"
     }
   ]
 }
