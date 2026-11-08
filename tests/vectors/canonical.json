@@ -1,0 +1,136 @@
+{
+  "description": "Canonical byte vectors. canonical: canonicalize(input) must equal canonical_hex and hash to sha256. signing_input: signing_input(record_type, version, body) must equal signing_input_hex. strict_rejections: strict_decode(raw, required={id,issued_at}, integer_fields={issued_at}) must raise ValueError containing error. No Unicode normalisation is applied: nfc-composed and nfd-decomposed produce different bytes.",
+  "canonical": [
+    {
+      "name": "empty-object",
+      "input": {},
+      "canonical_hex": "7b7d",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "key-order",
+      "input": {
+        "b": 1,
+        "a": 2
+      },
+      "canonical_hex": "7b2261223a322c2262223a317d",
+      "sha256": "d3626ac30a87e6f7a6428233b3c68299976865fa5508e4267c5415c76af7a772"
+    },
+    {
+      "name": "nested-key-order",
+      "input": {
+        "z": {
+          "b": [
+            1,
+            2
+          ],
+          "a": null
+        },
+        "a": true
+      },
+      "canonical_hex": "7b2261223a747275652c227a223a7b2261223a6e756c6c2c2262223a5b312c325d7d7d",
+      "sha256": "e7740d10953bf45dba8a5fcf7f50c0bc1dd0053cbef65be87d1656b0acc8ae23"
+    },
+    {
+      "name": "integers",
+      "input": {
+        "zero": 0,
+        "neg": -7,
+        "big": 9007199254740993
+      },
+      "canonical_hex": "7b22626967223a393030373139393235343734303939332c226e6567223a2d372c227a65726f223a307d",
+      "sha256": "92cde06fd2daf26fcaad2d25d48fe05ad79df3c5bd4287f8b9664b45688af2bb"
+    },
+    {
+      "name": "string-escapes",
+      "input": {
+        "s": "quote\" backslash\\ newline\n tab\t"
+      },
+      "canonical_hex": "7b2273223a2271756f74655c22206261636b736c6173685c5c206e65776c696e655c6e207461625c74227d",
+      "sha256": "60cc0bd87ec15e01750f95ffc0b3f5730ee0ea7e511a8c5a798269e3d68cd0dd"
+    },
+    {
+      "name": "non-ascii-raw-utf8",
+      "input": {
+        "s": "caf\u00e9 \u4e2d"
+      },
+      "canonical_hex": "7b2273223a22636166c3a920e4b8ad227d",
+      "sha256": "8e320fd841950a450c91c49226f245023dd0b577103c5fe29e60d648eb56181c"
+    },
+    {
+      "name": "nfc-composed",
+      "input": {
+        "id": "caf\u00e9"
+      },
+      "canonical_hex": "7b226964223a22636166c3a9227d",
+      "sha256": "548e6c23920d3e450d2949502742e2b0bb9965b7559454d8e4f95107aa857edd"
+    },
+    {
+      "name": "nfd-decomposed",
+      "input": {
+        "id": "cafe\u0301"
+      },
+      "canonical_hex": "7b226964223a2263616665cc81227d",
+      "sha256": "a38eb1be025d5154c3fb3737952419fba1e566b7e00b658590881bb5166c3f5a"
+    }
+  ],
+  "signing_input": [
+    {
+      "name": "task-root-v1",
+      "record_type": "task-root",
+      "version": 1,
+      "body": {
+        "a": 1
+      },
+      "signing_input_hex": "6167656e742d77617272616e742f7461736b2d726f6f742f7631007b2261223a317d",
+      "sha256": "ba64620d153a0d8ad169ca2b30e7bf85159c5fec3cbf761bbf3e81e06452f559"
+    },
+    {
+      "name": "chain-link-v1",
+      "record_type": "chain-link",
+      "version": 1,
+      "body": {
+        "a": 1
+      },
+      "signing_input_hex": "6167656e742d77617272616e742f636861696e2d6c696e6b2f7631007b2261223a317d",
+      "sha256": "4be2e6f6d093dc252566d6c354619b2f58b9344626b4d28c327691d79cf020d0"
+    },
+    {
+      "name": "task-root-v2",
+      "record_type": "task-root",
+      "version": 2,
+      "body": {
+        "a": 1
+      },
+      "signing_input_hex": "6167656e742d77617272616e742f7461736b2d726f6f742f7632007b2261223a317d",
+      "sha256": "b9e9abe5121380ec6eca9c4bd62605266f17f1d279d9d62a9c7bd6236080310f"
+    }
+  ],
+  "strict_rejections": [
+    {
+      "name": "float-1.0",
+      "raw": "{\"id\":\"a\",\"issued_at\":1.0}",
+      "error": "floats are not allowed"
+    },
+    {
+      "name": "float-exponent",
+      "raw": "{\"id\":\"a\",\"issued_at\":1e3}",
+      "error": "floats are not allowed"
+    },
+    {
+      "name": "duplicate-key",
+      "raw": "{\"id\":\"a\",\"id\":\"b\",\"issued_at\":1}",
+      "error": "duplicate key"
+    },
+    {
+      "name": "unknown-key",
+      "raw": "{\"id\":\"a\",\"issued_at\":1,\"extra\":1}",
+      "error": "unknown keys"
+    },
+    {
+      "name": "string-timestamp",
+      "raw": "{\"id\":\"a\",\"issued_at\":\"1\"}",
+      "error": "must be an integer"
+    }
+  ]
+}
