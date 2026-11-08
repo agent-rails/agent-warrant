@@ -91,6 +91,8 @@ class ChainLink:
             raise ValueError(f"malformed chain link: {err}") from None
         fields = strict_decode(body, required=_LINK_BODY_FIELDS, integer_fields=_LINK_INTEGER_FIELDS)
         _validate_link_fields(fields)
+        if canonicalize(fields) != body:
+            raise ValueError("body is not in canonical form")
         return cls(**fields, proof=proof)
 
 
@@ -101,6 +103,8 @@ def _validate_link_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be a non-empty string")
         if len(value) > MAX_FIELD_CHARACTERS:
             raise ValueError(f"{name} is longer than {MAX_FIELD_CHARACTERS} characters")
+        if not all("!" <= character <= "~" for character in value):
+            raise ValueError(f"{name} must be ASCII printable without whitespace or control characters")
     for name in _LINK_HASH_FIELDS:
         if not _is_binding(fields[name]):
             raise ValueError(f"{name} is not a canonical base64url sha256 digest")
@@ -205,6 +209,8 @@ class LeafProof:
             raise ValueError("binding is not a canonical base64url sha256 digest")
         if not 0 <= fields["iat"] <= MAX_SAFE_INTEGER:
             raise ValueError("iat is out of range")
+        if canonicalize(fields) != body:
+            raise ValueError("body is not in canonical form")
         return cls(binding=fields["binding"], iat=fields["iat"], signature=signature)
 
 
