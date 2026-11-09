@@ -2,7 +2,7 @@
 
 Notable changes. This project follows [Semantic Versioning](https://semver.org). While on `0.x`, minor versions may include breaking changes.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-09
 
 First release. Specs: `docs/spec/`. Design history: `docs/DESIGN.md`. Limits: `docs/THREAT_MODEL.md`.
 

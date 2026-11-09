@@ -15,10 +15,8 @@ Deeper reference: [`docs/DESIGN.md`](docs/DESIGN.md) (why it's shaped this way, 
 
 ## Install
 
-Not yet published to PyPI — install from GitHub:
-
 ```bash
-pip install git+https://github.com/agent-rails/agent-warrant.git
+pip install agent-warrant
 ```
 
 ## Development
