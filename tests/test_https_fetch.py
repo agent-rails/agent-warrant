@@ -203,6 +203,24 @@ def test_pinned_connection_dials_screened_ip_with_hostname_sni(monkeypatch):
     assert connection.sock == "raw-socket"
 
 
+def test_https_get_verifies_certificate_and_hostname(monkeypatch):
+    import agent_warrant.https_fetch as https_fetch
+
+    _patch_resolve_public(monkeypatch)
+    captured = {}
+
+    def _capture(host, pinned_ip, port, timeout, context):
+        captured["context"] = context
+        raise OSError("stop after capturing the context")
+
+    monkeypatch.setattr(https_fetch, "_build_pinned_connection", _capture)
+    with pytest.raises(OSError, match="stop after capturing"):
+        https_get("example.com", "/x", timeout_seconds=1.0, max_bytes=1024)
+
+    assert captured["context"].verify_mode == ssl.CERT_REQUIRED
+    assert captured["context"].check_hostname is True
+
+
 # --- total wall-clock deadline (slow-drip cannot hold the fetch open) ---
 
 
