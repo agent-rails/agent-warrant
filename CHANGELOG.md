@@ -2,6 +2,13 @@
 
 Notable changes. This project follows [Semantic Versioning](https://semver.org). While on `0.x`, minor versions may include breaking changes.
 
+## [Unreleased]
+
+### Ledger
+
+- `TaskLedger.create(path, shared_group=gid)` and `TaskLedger.open(path, shared_group=gid)`: the file is mode 0640 in group `gid` instead of 0600. The default is unchanged.
+- `TaskLedger.open_read_only(path, writer_uid, group)` returns a `ReadOnlyLedger`: `O_RDONLY` file checks (owner `writer_uid`, mode 0640, group `group`, one link, SQLite header, same device and inode), SQLite `mode=ro`, `is_revoked` and `reservation_readonly`; no PRAGMA writes, no transactions, no release of expired reservations; mutating methods raise `LedgerUnavailable`. It works only while the writer holds the WAL database open. See `docs/spec/ledger.md`.
+
 ## [0.1.0] - 2026-11-09
 
 First release. Specs: `docs/spec/`. Design history: `docs/DESIGN.md`. Limits: `docs/THREAT_MODEL.md`.
