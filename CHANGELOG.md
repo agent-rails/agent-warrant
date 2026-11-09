@@ -27,6 +27,6 @@ First release. Specs: `docs/spec/`. Design history: `docs/DESIGN.md`. Limits: `d
 
 ## Stability
 
-- Public API is everything exported from `agent_warrant`'s top-level `__all__`.
+- Public API is everything exported from `agent_warrant`'s top-level `__all__`, plus the names without a leading underscore in `agent_warrant.canonical`, `agent_warrant.task_root`, `agent_warrant.trust`, `agent_warrant.scope`, `agent_warrant.chain` and `agent_warrant.ledger`.
 - On `0.x`: breaking changes may land in minor releases. Pin to `~=0.1.0` if you need stability.
 - Ships PEP 561 type information (`py.typed`).
