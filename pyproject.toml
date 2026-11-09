@@ -18,9 +18,9 @@ classifiers = [
 dependencies = ["cryptography>=42"]
 
 [project.urls]
-Homepage = "https://github.com/voltagebots/agent-warrant"
-Repository = "https://github.com/voltagebots/agent-warrant"
-Issues = "https://github.com/voltagebots/agent-warrant/issues"
+Homepage = "https://github.com/agent-rails/agent-warrant"
+Repository = "https://github.com/agent-rails/agent-warrant"
+Issues = "https://github.com/agent-rails/agent-warrant/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "hypothesis>=6.100"]
