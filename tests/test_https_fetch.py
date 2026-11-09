@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import socket
+import ssl
 import time
 
 import pytest
@@ -181,6 +182,9 @@ def test_pinned_connection_dials_screened_ip_with_hostname_sni(monkeypatch):
     captured = {}
 
     class _FakeContext:
+        verify_mode = ssl.CERT_REQUIRED
+        check_hostname = True
+
         def wrap_socket(self, sock, server_hostname=None):
             captured["server_hostname"] = server_hostname
             captured["wrapped"] = sock
