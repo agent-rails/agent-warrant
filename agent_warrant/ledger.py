@@ -151,13 +151,25 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
     return info
 
 
-def _writer_policy() -> _FilePolicy:
-    return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
+def _check_os_id(label: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
 
 
-def _create_file(path: Path) -> None:
+def _writer_policy(shared_group: int | None) -> _FilePolicy:
+    if shared_group is None:
+        return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
+    return _FilePolicy(
+        flags=os.O_RDWR, owner=os.geteuid(), mode=0o640, group=_check_os_id("shared_group", shared_group)
+    )
+
+
+def _create_file(path: Path, policy: _FilePolicy) -> None:
     """Create a new empty ledger file with O_EXCL and mode 0600; never replaces a file
-    and never creates through a symlink."""
+    and never creates through a symlink. With a shared group the file is moved to that
+    group first and only then widened to 0640; if the group cannot be set the new file
+    is removed."""
     _check_parent(path)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -165,6 +177,12 @@ def _create_file(path: Path) -> None:
         raise LedgerUnavailable(f"cannot create ledger file: {err}") from err
     try:
         os.fchmod(descriptor, 0o600)
+        if policy.group is not None:
+            os.fchown(descriptor, -1, policy.group)
+            os.fchmod(descriptor, policy.mode)
+    except OSError as err:
+        os.unlink(path)
+        raise LedgerUnavailable(f"cannot set the ledger file group: {err}") from err
     finally:
         os.close(descriptor)
 
@@ -297,10 +315,12 @@ class TaskLedger:
     only results of verify_root and chains from verify_chain; it does not re-verify
     signatures."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(self, path: str | os.PathLike[str], shared_group: int | None = None) -> None:
         """Attach to an existing ledger. Never creates a file: a missing, replaced or
-        schema-less database raises LedgerUnavailable. Use `create` for a new ledger."""
-        self._attach(Path(os.path.abspath(path)), _writer_policy())
+        schema-less database raises LedgerUnavailable. Use `create` for a new ledger.
+        With `shared_group` (a gid) the file must have mode 0640 and that group instead
+        of mode 0600."""
+        self._attach(Path(os.path.abspath(path)), _writer_policy(shared_group))
         with self._transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
@@ -311,17 +331,20 @@ class TaskLedger:
             raise LedgerUnavailable(f"unsupported ledger schema version {version}")
 
     @classmethod
-    def open(cls, path: str | os.PathLike[str]) -> TaskLedger:
-        return cls(path)
+    def open(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
+        return cls(path, shared_group)
 
     @classmethod
-    def create(cls, path: str | os.PathLike[str]) -> TaskLedger:
-        """Create a new private ledger file with the schema. Refuses an existing path."""
+    def create(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
+        """Create a new ledger file with the schema. Refuses an existing path. The file
+        is 0600, or 0640 in group `shared_group` (a gid the effective user belongs to)
+        so that a reader in that group can use `open_read_only`."""
         target = Path(os.path.abspath(path))
-        _create_file(target)
+        policy = _writer_policy(shared_group)
+        _create_file(target, policy)
         ledger = cls.__new__(cls)
         ledger._allow_empty = True
-        ledger._attach(target, _writer_policy())
+        ledger._attach(target, policy)
         with ledger._transaction() as connection:
             for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
                 if statement.strip():
