@@ -4,10 +4,11 @@ import os
 import sqlite3
 import stat
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 from urllib.parse import quote
 
 from .canonical import MAX_SAFE_INTEGER, signing_input
@@ -296,7 +297,87 @@ class BudgetStatus:
         return self.budget - self.spent
 
 
-class TaskLedger:
+class _LedgerFile:
+    """Connection lifecycle shared by the writer and the reader: the file checks, the
+    (device, inode) identity re-check on every call, the fork guard and close()."""
+
+    _URI_MODE = "rw"
+    _CONNECT_PRAGMAS: tuple[str, ...] = ()
+
+    def _attach(self, path: Path, policy: _FilePolicy) -> None:
+        self._path = path
+        self._policy = policy
+        self._allow_empty = getattr(self, "_allow_empty", False)
+        self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+        self._closed = False
+        self._identity: tuple[int, int] | None = None
+        self._pid = os.getpid()
+        self._reconnect()
+
+    def _reconnect(self) -> None:
+        """Open the SQLite connection through the full file checks. The file's
+        (device, inode) is read before connecting, must match the identity this
+        ledger was first opened on, and must be unchanged after connecting."""
+        before = _check_file(self._path, self._policy, self._allow_empty)
+        identity = (before.st_dev, before.st_ino)
+        if self._identity is not None and identity != self._identity:
+            raise LedgerUnavailable("ledger file was replaced")
+        uri = f"file:{quote(str(self._path), safe='/')}?mode={self._URI_MODE}"
+        connection = None
+        try:
+            connection = sqlite3.connect(
+                uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
+            )
+            for pragma in self._CONNECT_PRAGMAS:
+                connection.execute(pragma)
+            after = _check_file(self._path, self._policy, self._allow_empty)
+            if (after.st_dev, after.st_ino) != identity:
+                raise LedgerUnavailable("ledger file was replaced while connecting")
+        except sqlite3.Error as err:
+            if connection is not None:
+                connection.close()
+            raise LedgerUnavailable(f"ledger database error: {err}") from err
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            raise
+        self._identity = identity
+        self._connection = connection
+        self._pid = os.getpid()
+
+    def close(self) -> None:
+        """Release the SQLite connection for good. Idempotent; later calls raise
+        LedgerUnavailable."""
+        with self._lock:
+            self._closed = True
+            connection, self._connection = self._connection, None
+        if connection is not None:
+            connection.close()
+
+    def _drop(self, connection: sqlite3.Connection) -> None:
+        """Discard a connection that may be mid-transaction or otherwise unusable. The
+        next call reconnects through the full file checks."""
+        self._connection = None
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    def _live_connection(self) -> sqlite3.Connection:
+        if self._closed:
+            raise LedgerUnavailable("ledger is closed")
+        if os.getpid() != self._pid:
+            raise LedgerUnavailable("ledger connection belongs to another process; open a new ledger after fork")
+        if self._connection is None:
+            self._reconnect()
+        info = _check_file(self._path, self._policy, self._allow_empty)
+        if (info.st_dev, info.st_ino) != self._identity:
+            raise LedgerUnavailable("ledger file was replaced")
+        return self._connection
+
+
+class TaskLedger(_LedgerFile):
     """Single-host SQLite ledger of task budgets and revocations. One SQLite connection
     is opened after the file checks and reused for the ledger's lifetime (WAL journal,
     full synchronous commits, parameterized statements only). Every call still
@@ -314,6 +395,8 @@ class TaskLedger:
     UPDATE or DELETE on the revocation tables. The ledger trusts its caller to pass
     only results of verify_root and chains from verify_chain; it does not re-verify
     signatures."""
+
+    _CONNECT_PRAGMAS = ("PRAGMA journal_mode = WAL", "PRAGMA synchronous = FULL", "PRAGMA foreign_keys = ON")
 
     def __init__(self, path: str | os.PathLike[str], shared_group: int | None = None) -> None:
         """Attach to an existing ledger. Never creates a file: a missing, replaced or
@@ -333,6 +416,10 @@ class TaskLedger:
     @classmethod
     def open(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
         return cls(path, shared_group)
+
+    @classmethod
+    def open_read_only(cls, path: str | os.PathLike[str], writer_uid: int, group: int) -> ReadOnlyLedger:
+        return ReadOnlyLedger(path, writer_uid, group)
 
     @classmethod
     def create(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
@@ -359,84 +446,11 @@ class TaskLedger:
         ledger._allow_empty = False
         return ledger
 
-    def _attach(self, path: Path, policy: _FilePolicy) -> None:
-        self._path = path
-        self._policy = policy
-        self._allow_empty = getattr(self, "_allow_empty", False)
-        self._lock = threading.RLock()
-        self._connection: sqlite3.Connection | None = None
-        self._closed = False
-        self._identity: tuple[int, int] | None = None
-        self._pid = os.getpid()
-        self._reconnect()
-
-    def _reconnect(self) -> None:
-        """Open the SQLite connection through the full file checks. The file's
-        (device, inode) is read before connecting, must match the identity this
-        ledger was first opened on, and must be unchanged after connecting."""
-        before = _check_file(self._path, self._policy, self._allow_empty)
-        identity = (before.st_dev, before.st_ino)
-        if self._identity is not None and identity != self._identity:
-            raise LedgerUnavailable("ledger file was replaced")
-        uri = f"file:{quote(str(self._path), safe='/')}?mode=rw"
-        connection = None
-        try:
-            connection = sqlite3.connect(
-                uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
-            )
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = FULL")
-            connection.execute("PRAGMA foreign_keys = ON")
-            after = _check_file(self._path, self._policy, self._allow_empty)
-            if (after.st_dev, after.st_ino) != identity:
-                raise LedgerUnavailable("ledger file was replaced while connecting")
-        except sqlite3.Error as err:
-            if connection is not None:
-                connection.close()
-            raise LedgerUnavailable(f"ledger database error: {err}") from err
-        except BaseException:
-            if connection is not None:
-                connection.close()
-            raise
-        self._identity = identity
-        self._connection = connection
-        self._pid = os.getpid()
-
-    def close(self) -> None:
-        """Release the SQLite connection for good. Idempotent; later calls raise
-        LedgerUnavailable."""
-        with self._lock:
-            self._closed = True
-            connection, self._connection = self._connection, None
-        if connection is not None:
-            connection.close()
-
     def __enter__(self) -> TaskLedger:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-    def _drop(self, connection: sqlite3.Connection) -> None:
-        """Discard a connection that may be mid-transaction or otherwise unusable. The
-        next call reconnects through the full file checks."""
-        self._connection = None
-        try:
-            connection.close()
-        except Exception:
-            pass
-
-    def _live_connection(self) -> sqlite3.Connection:
-        if self._closed:
-            raise LedgerUnavailable("ledger is closed")
-        if os.getpid() != self._pid:
-            raise LedgerUnavailable("ledger connection belongs to another process; open a new TaskLedger after fork")
-        if self._connection is None:
-            self._reconnect()
-        info = _check_file(self._path, self._policy, self._allow_empty)
-        if (info.st_dev, info.st_ino) != self._identity:
-            raise LedgerUnavailable("ledger file was replaced")
-        return self._connection
 
     def _rollback_or_drop(self, connection: sqlite3.Connection) -> None:
         try:
@@ -759,3 +773,95 @@ class TaskLedger:
             self._release_expired(connection, link.tenant_id, link.task_id, now)
             row = connection.execute("SELECT cap, spent FROM links WHERE binding = ?", (link.binding(),)).fetchone()
             return None if row is None else BudgetStatus(budget=row[0], spent=row[1])
+
+
+def _read_only(name: str) -> Callable[..., NoReturn]:
+    def refuse(self: ReadOnlyLedger, *args: object, **kwargs: object) -> NoReturn:
+        raise LedgerUnavailable(f"ledger is open read-only: {name} is not allowed")
+
+    refuse.__name__ = name
+    return refuse
+
+
+class ReadOnlyLedger(_LedgerFile):
+    """Read-only view of a ledger owned by another user, for a process that must check
+    revocation and reservations but never change them. The file is opened O_RDONLY and
+    SQLite with `mode=ro`; no PRAGMA is set, no transaction is begun and expired
+    reservations are not released. Before every call the file must be a regular file
+    owned by `writer_uid`, mode exactly 0640, in group `group`, with one hard link and
+    the SQLite header, and the same (device, inode) the connection was opened on.
+
+    The database is in WAL mode, so a reader that cannot write the directory needs the
+    `-wal` and `-shm` files to exist and be readable: the writer must hold the database
+    open. Otherwise every call raises LedgerUnavailable. Mutating methods raise
+    LedgerUnavailable."""
+
+    _URI_MODE = "ro"
+
+    def __init__(self, path: str | os.PathLike[str], writer_uid: int, group: int) -> None:
+        policy = _FilePolicy(
+            flags=os.O_RDONLY,
+            owner=_check_os_id("writer_uid", writer_uid),
+            mode=0o640,
+            group=_check_os_id("group", group),
+        )
+        self._attach(Path(os.path.abspath(path)), policy)
+        try:
+            with self._read() as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+        except BaseException:
+            self.close()
+            raise
+        if version == 0:
+            self.close()
+            raise LedgerUnavailable("ledger database has no schema")
+        if version != SCHEMA_VERSION:
+            self.close()
+            raise LedgerUnavailable(f"unsupported ledger schema version {version}")
+
+    def __enter__(self) -> ReadOnlyLedger:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            try:
+                yield self._live_connection()
+            except LedgerUnavailable:
+                raise
+            except Exception as err:
+                raise LedgerUnavailable(f"ledger error: {err}") from err
+
+    def is_revoked(self, context: ChainContext) -> bool:
+        """ChainRevocationChecker: True if the root, any link, the task or the tenant
+        is revoked. A database failure raises RevocationSourceUnreachable."""
+        bindings = (context.task_root, *context.link_bindings)
+        try:
+            with self._read() as connection:
+                return TaskLedger._revoked(connection, context.tenant_id, context.task_id, bindings)
+        except Exception as err:
+            raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
+
+    def reservation_readonly(self, tenant_id: str, task_id: str, op_id: str) -> Reservation | None:
+        """The stored reservation as it is in the file, or None. Expired `reserved`
+        rows are returned unchanged with their `expires_at`; the caller checks expiry."""
+        _check_id("tenant_id", tenant_id)
+        _check_id("task_id", task_id)
+        _check_id("op_id", op_id)
+        with self._read() as connection:
+            return TaskLedger._read_reservation(connection, tenant_id, task_id, op_id)
+
+    open_task = _read_only("open_task")
+    revoke = _read_only("revoke")
+    revoke_task = _read_only("revoke_task")
+    revoke_tenant = _read_only("revoke_tenant")
+    reserve = _read_only("reserve")
+    mark_issued = _read_only("mark_issued")
+    mark_done = _read_only("mark_done")
+    mark_outcome_unknown = _read_only("mark_outcome_unknown")
+    reservation = _read_only("reservation")
+    task_budget = _read_only("task_budget")
+    link_budget = _read_only("link_budget")
