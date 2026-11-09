@@ -416,21 +416,16 @@ def test_verify_rejects_deeply_nested_scope_not_raises():
     # Mutation-tested: a dict-chain version at a shallower depth did NOT reliably trigger
     # Python's natural RecursionError once the explicit guard was removed, giving a false
     # sense of coverage -- this shape does.
-    deeply_nested_list = []
-    cursor = deeply_nested_list
-    for _ in range(3000):
-        cursor.append([])
-        cursor = cursor[0]
-
     body = {
         "version": CURRENT_VERSION,
         "issuer": "team-a",
         "subject": "irrelevant",
-        "scope": {"items": deeply_nested_list},
+        "scope": {"items": "NESTED"},
         "issued_at": 0.0,
         "expires_at": 2000.0,
     }
-    body_b64 = base64.urlsafe_b64encode(_json.dumps(body).encode()).rstrip(b"=").decode()
+    body_json = _json.dumps(body).replace('"NESTED"', "[" * 3000 + "]" * 3000)
+    body_b64 = base64.urlsafe_b64encode(body_json.encode()).rstrip(b"=").decode()
     encoded = f"{body_b64}.AAAA"  # base64-valid garbage proof, NOT "fakeproof" -- see comment above
     assert len(encoded) < 16_384
 
