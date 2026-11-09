@@ -109,16 +109,24 @@ def _check_parent(path: Path) -> None:
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
 
 
-def _check_file(path: Path, allow_empty: bool = False) -> os.stat_result:
-    """Refuse a database path that is not an existing private regular file we own.
-    The file is opened with O_NOFOLLOW (no symlink is followed) and never created, and
-    inspected with fstat: it must be a regular file, owned by the effective user, with
-    mode exactly 0600, with a single hard link, starting with the SQLite header (an empty file only when
-    `allow_empty`, while creating); its parent directory must not be group or other
-    writable. A file is never chmod-ed here, only refused."""
+@dataclass(frozen=True)
+class _FilePolicy:
+    flags: int
+    owner: int
+    mode: int
+    group: int | None
+
+
+def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> os.stat_result:
+    """Refuse a database path that does not match `policy`. The file is opened with
+    O_NOFOLLOW (no symlink is followed) and never created, and inspected with fstat: it
+    must be a regular file, owned by `policy.owner`, with mode exactly `policy.mode`, in
+    group `policy.group` when set, with a single hard link, starting with the SQLite
+    header (an empty file only when `allow_empty`, while creating); its parent directory
+    must not be group or other writable. A file is never chmod-ed here, only refused."""
     _check_parent(path)
     try:
-        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
     except OSError as err:
         raise LedgerUnavailable(f"cannot open ledger file: {err}") from err
     try:
@@ -130,15 +138,21 @@ def _check_file(path: Path, allow_empty: bool = False) -> os.stat_result:
         os.close(descriptor)
     if not stat.S_ISREG(info.st_mode):
         raise LedgerUnavailable("ledger path is not a regular file")
-    if info.st_uid != os.geteuid():
-        raise LedgerUnavailable("ledger file owner is not the current user")
-    if stat.S_IMODE(info.st_mode) != 0o600:
-        raise LedgerUnavailable(f"ledger file mode must be 0600, found {oct(stat.S_IMODE(info.st_mode))}")
+    if info.st_uid != policy.owner:
+        raise LedgerUnavailable("ledger file owner is not the expected user")
+    if stat.S_IMODE(info.st_mode) != policy.mode:
+        raise LedgerUnavailable(f"ledger file mode must be {oct(policy.mode)}, found {oct(stat.S_IMODE(info.st_mode))}")
+    if policy.group is not None and info.st_gid != policy.group:
+        raise LedgerUnavailable(f"ledger file group must be {policy.group}, found {info.st_gid}")
     if info.st_nlink != 1:
         raise LedgerUnavailable("ledger file has multiple hard links")
     if header != SQLITE_MAGIC and not (allow_empty and info.st_size == 0):
         raise LedgerUnavailable("ledger file is not a SQLite database")
     return info
+
+
+def _writer_policy() -> _FilePolicy:
+    return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
 
 
 def _create_file(path: Path) -> None:
@@ -286,7 +300,7 @@ class TaskLedger:
     def __init__(self, path: str | os.PathLike[str]) -> None:
         """Attach to an existing ledger. Never creates a file: a missing, replaced or
         schema-less database raises LedgerUnavailable. Use `create` for a new ledger."""
-        self._attach(Path(os.path.abspath(path)))
+        self._attach(Path(os.path.abspath(path)), _writer_policy())
         with self._transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
@@ -307,7 +321,7 @@ class TaskLedger:
         _create_file(target)
         ledger = cls.__new__(cls)
         ledger._allow_empty = True
-        ledger._attach(target)
+        ledger._attach(target, _writer_policy())
         with ledger._transaction() as connection:
             for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
                 if statement.strip():
@@ -322,8 +336,9 @@ class TaskLedger:
         ledger._allow_empty = False
         return ledger
 
-    def _attach(self, path: Path) -> None:
+    def _attach(self, path: Path, policy: _FilePolicy) -> None:
         self._path = path
+        self._policy = policy
         self._allow_empty = getattr(self, "_allow_empty", False)
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
@@ -336,7 +351,7 @@ class TaskLedger:
         """Open the SQLite connection through the full file checks. The file's
         (device, inode) is read before connecting, must match the identity this
         ledger was first opened on, and must be unchanged after connecting."""
-        before = _check_file(self._path, self._allow_empty)
+        before = _check_file(self._path, self._policy, self._allow_empty)
         identity = (before.st_dev, before.st_ino)
         if self._identity is not None and identity != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
@@ -349,7 +364,7 @@ class TaskLedger:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
             connection.execute("PRAGMA foreign_keys = ON")
-            after = _check_file(self._path, self._allow_empty)
+            after = _check_file(self._path, self._policy, self._allow_empty)
             if (after.st_dev, after.st_ino) != identity:
                 raise LedgerUnavailable("ledger file was replaced while connecting")
         except sqlite3.Error as err:
@@ -395,7 +410,7 @@ class TaskLedger:
             raise LedgerUnavailable("ledger connection belongs to another process; open a new TaskLedger after fork")
         if self._connection is None:
             self._reconnect()
-        info = _check_file(self._path, self._allow_empty)
+        info = _check_file(self._path, self._policy, self._allow_empty)
         if (info.st_dev, info.st_ino) != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
         return self._connection
