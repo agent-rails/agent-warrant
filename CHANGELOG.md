@@ -10,7 +10,7 @@ First release. Specs: `docs/spec/`. Design history: `docs/DESIGN.md`. Limits: `d
 
 - `Grant`, `PossessionProof`, `sign()`, `prove()`, `verify()`; `Issuer`, `Verifier`, `HolderKeypair`. Ed25519, issuer-signed, scoped, expiring; a fresh possession proof binds the grant to its holder.
 - `IssuerResolver`, `PinnedResolver` (out-of-band key pinning) and `DidWebResolver` (did:web over HTTPS; Multikey, `JsonWebKey2020` and `publicKeyBase58` Ed25519 keys). Fails closed. HTTPS fetches refuse non-global addresses and dial the screened IP.
-- Opt-in revocation: `RevocationChecker`, `RevocationList` (issuer-signed, with `sequence` and expiry), `StaticRevocationChecker`, `HttpRevocationChecker`. Unknown status fails closed.
+- Opt-in revocation: `RevocationChecker`, `RevocationList` (issuer-signed, with `sequence` and expiry), `StaticRevocationChecker` (checks the list's signature, issuer and expiry once, when constructed; `is_revoked()` keeps using that list, so the caller replaces the checker before the list expires), `HttpRevocationChecker` (fetches and checks the list on every call). A list that cannot be fetched or fails a check fails closed.
 
 ### Task roots and delegation chains
 
