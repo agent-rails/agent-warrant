@@ -10,6 +10,7 @@ import stat
 import pytest
 from test_ledger import NOW, World
 
+from agent_warrant import ledger as ledger_module
 from agent_warrant.encoding import sha256_b64u
 from agent_warrant.exceptions import RevocationSourceUnreachable
 from agent_warrant.ledger import LedgerUnavailable, Operation, ReadOnlyLedger, TaskLedger
@@ -197,11 +198,54 @@ def test_the_reader_connection_allows_no_attached_database(reader):
     assert reader._connection.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED) == 0
 
 
+def test_the_reader_opens_the_file_read_only(writer, path, monkeypatch):
+    real_open = os.open
+    flags_seen = []
+
+    def recording_open(target, flags, *args, **kwargs):
+        if os.fspath(target) == str(path):
+            flags_seen.append(flags)
+        return real_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.os, "open", recording_open)
+    with TaskLedger.open_read_only(path, UID, GID) as reader:
+        reader.reservation_readonly("t1", "task-1", "op-1")
+    assert len(flags_seen) >= 3
+    assert all(flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) == os.O_RDONLY for flags in flags_seen)
+    assert all(flags & os.O_NOFOLLOW and not flags & os.O_CREAT for flags in flags_seen)
+
+
 def test_open_after_the_writer_closed_names_the_missing_wal(writer, path):
     writer.close()
     with pytest.raises(LedgerUnavailable, match="writer is not holding the database open"):
         TaskLedger.open_read_only(path, UID, GID)
     assert not (path.parent / (path.name + "-wal")).exists()
+
+
+def missing_file(path):
+    return path
+
+
+def missing_parent(path):
+    return path.parent / "absent" / "ledger.db"
+
+
+def symlink(path):
+    link = path.parent / "link.db"
+    link.symlink_to(path)
+    return link
+
+
+@pytest.mark.parametrize("target", [missing_file, missing_parent, symlink])
+def test_reader_errors_do_not_name_the_path(writer, path, tmp_path, target):
+    opened = target(path)
+    if target is missing_file:
+        writer.close()
+        os.unlink(path)
+    with pytest.raises(LedgerUnavailable) as raised:
+        TaskLedger.open_read_only(opened, UID, GID)
+    assert str(tmp_path) not in str(raised.value)
+    assert os.path.realpath(tmp_path) not in str(raised.value)
 
 
 def other_member_group():

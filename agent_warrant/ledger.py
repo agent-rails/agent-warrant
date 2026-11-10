@@ -107,7 +107,7 @@ def _check_parent(path: Path) -> None:
     try:
         parent_mode = os.stat(path.parent).st_mode
     except OSError as err:
-        raise LedgerUnavailable(f"cannot inspect parent directory: {err}") from err
+        raise LedgerUnavailable(f"cannot inspect parent directory: {err.strerror}") from err
     if not stat.S_ISDIR(parent_mode) or parent_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
 
@@ -163,12 +163,12 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
     try:
         descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot open ledger file: {err}") from err
+        raise LedgerUnavailable(f"cannot open ledger file: {err.strerror}") from err
     try:
         info = os.fstat(descriptor)
         header = os.pread(descriptor, len(SQLITE_MAGIC), 0)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot inspect ledger file: {err}") from err
+        raise LedgerUnavailable(f"cannot inspect ledger file: {err.strerror}") from err
     finally:
         os.close(descriptor)
     if not stat.S_ISREG(info.st_mode):
@@ -217,7 +217,7 @@ def _create_file(path: Path, policy: _FilePolicy) -> None:
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot create ledger file: {err}") from err
+        raise LedgerUnavailable(f"cannot create ledger file: {err.strerror}") from err
     try:
         os.fchmod(descriptor, 0o600)
         if policy.group is not None:
@@ -225,7 +225,7 @@ def _create_file(path: Path, policy: _FilePolicy) -> None:
             os.fchmod(descriptor, policy.mode)
     except OSError as err:
         os.unlink(path)
-        raise LedgerUnavailable(f"cannot set the ledger file group: {err}") from err
+        raise LedgerUnavailable(f"cannot set the ledger file group: {err.strerror}") from err
     finally:
         os.close(descriptor)
 
