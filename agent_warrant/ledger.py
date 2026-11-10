@@ -816,6 +816,19 @@ class TaskLedger(_LedgerFile):
                 raise Refused("unknown task")
             return BudgetStatus(budget=row[0], spent=row[1])
 
+    def issued_expired(self, now: int) -> list[Reservation]:
+        """Every `issued` reservation, in any task, whose `expires_at <= now`, ordered by
+        tenant, task and op_id. Changes nothing: for restart recovery, the caller
+        decides each with `mark_done` or `mark_outcome_unknown`."""
+        _check_now(now)
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT tenant_id, task_id, op_id, digest, cost, state, expires_at FROM reservations "
+                "WHERE state = 'issued' AND expires_at <= ? ORDER BY tenant_id, task_id, op_id",
+                (now,),
+            ).fetchall()
+        return [Reservation(*row) for row in rows]
+
     def link_budget(self, link: ChainLink, now: int) -> BudgetStatus | None:
         """Spend against `link`'s cap, or None if the link has not been used yet."""
         _check_now(now)
@@ -935,3 +948,4 @@ class ReadOnlyLedger(_LedgerFile):
     reservation = _read_only("reservation")
     task_budget = _read_only("task_budget")
     link_budget = _read_only("link_budget")
+    issued_expired = _read_only("issued_expired")

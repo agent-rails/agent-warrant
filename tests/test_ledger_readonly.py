@@ -144,6 +144,7 @@ MUTATING = {
     "reservation": lambda world: ("t1", "task-1", "op-1", NOW + 100),
     "task_budget": lambda world: ("t1", "task-1", NOW + 100),
     "link_budget": lambda world: (world.chain(1)[0], NOW + 100),
+    "issued_expired": lambda world: (NOW + 100,),
 }
 
 

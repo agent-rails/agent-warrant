@@ -605,3 +605,61 @@ def test_reusing_a_registered_link_does_not_reinsert_it(ledger, world):
     ledger.reserve(operation(world, links, op_id="a", cost=5), links, NOW)
     ledger.reserve(operation(world, links, op_id="b", cost=5), links, NOW)
     assert ledger.link_budget(links[0], NOW).spent == 10
+
+
+def test_issued_expired_lists_issued_reservations_at_or_past_expiry(ledger, world):
+    for op_id, expires_at in (("op-c", NOW + 5), ("op-a", NOW + 5), ("op-b", NOW + 30)):
+        ledger.reserve(operation(world, op_id=op_id, expires_at=expires_at), [], NOW)
+        ledger.mark_issued("t1", "task-1", op_id, NOW)
+    ledger.reserve(operation(world, op_id="op-reserved", expires_at=NOW + 5), [], NOW)
+    ledger.reserve(operation(world, op_id="op-done", expires_at=NOW + 5), [], NOW)
+    ledger.mark_issued("t1", "task-1", "op-done", NOW)
+    ledger.mark_done("t1", "task-1", "op-done", NOW)
+    assert ledger.issued_expired(NOW + 4) == []
+    expired = ledger.issued_expired(NOW + 5)
+    assert [(item.op_id, item.state, item.expires_at) for item in expired] == [
+        ("op-a", "issued", NOW + 5),
+        ("op-c", "issued", NOW + 5),
+    ]
+    assert expired[0] == ledger.reservation("t1", "task-1", "op-a", NOW)
+    assert [item.op_id for item in ledger.issued_expired(NOW + 30)] == ["op-a", "op-b", "op-c"]
+
+
+def test_issued_expired_changes_nothing(ledger, world, tmp_path):
+    ledger.reserve(operation(world, expires_at=NOW + 5), [], NOW)
+    ledger.mark_issued("t1", "task-1", "op-1", NOW)
+    ledger.reserve(operation(world, op_id="op-2", expires_at=NOW + 5), [], NOW)
+    ledger.issued_expired(NOW + 100)
+    connection = sqlite3.connect(tmp_path / "ledger.db")
+    try:
+        rows = connection.execute("SELECT op_id, state FROM reservations ORDER BY op_id").fetchall()
+        spent = connection.execute("SELECT spent FROM tasks").fetchone()[0]
+    finally:
+        connection.close()
+    assert rows == [("op-1", "issued"), ("op-2", "reserved")]
+    assert spent == 20
+
+
+def test_issued_expired_spans_tasks(tmp_path):
+    first, second = World(task="task-1"), World(task="task-2")
+    ledger = TaskLedger.create(tmp_path / "ledger.db")
+    for world in (second, first):
+        ledger.open_task(world.verified(), NOW)
+        ledger.reserve(operation(world, expires_at=NOW + 5), [], NOW)
+        ledger.mark_issued("t1", world.root.task_id, "op-1", NOW)
+    assert [(item.task_id, item.op_id) for item in ledger.issued_expired(NOW + 5)] == [
+        ("task-1", "op-1"),
+        ("task-2", "op-1"),
+    ]
+
+
+@pytest.mark.parametrize("now", [-1, True, 1.5, None, 2**53])
+def test_issued_expired_validates_now(ledger, now):
+    with pytest.raises(ValueError):
+        ledger.issued_expired(now)
+
+
+def test_issued_expired_on_a_deleted_database_is_unavailable(ledger, tmp_path):
+    (tmp_path / "ledger.db").unlink()
+    with pytest.raises(LedgerUnavailable):
+        ledger.issued_expired(NOW)
