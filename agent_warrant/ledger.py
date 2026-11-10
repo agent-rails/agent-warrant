@@ -158,7 +158,8 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
     group `policy.group` when set, with a single hard link, starting with the SQLite
     header (an empty file only when `allow_empty`, while creating); its parent directory
     must not be group or other writable; the `-wal` and `-shm` files must pass
-    `_check_sidecars`. A file is never chmod-ed here, only refused."""
+    `_check_sidecars`. A file is never chmod-ed here, only refused. The checks are by
+    path: they do not inspect the descriptor SQLite opens itself."""
     _check_parent(path)
     try:
         descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
@@ -359,8 +360,10 @@ class _LedgerFile:
 
     def _reconnect(self) -> None:
         """Open the SQLite connection through the full file checks. The file's
-        (device, inode) is read before connecting, must match the identity this
-        ledger was first opened on, and must be unchanged after connecting."""
+        (device, inode) is read by path before connecting, must match the identity
+        this ledger was first opened on, and must be unchanged after connecting. This
+        does not bind the descriptor SQLite opens: a process running as the file's
+        owner, or root, can swap the file and restore it while connecting."""
         before = _check_file(self._path, self._policy, self._allow_empty)
         identity = (before.st_dev, before.st_ino)
         if self._identity is not None and identity != self._identity:
@@ -429,7 +432,8 @@ class TaskLedger(_LedgerFile):
     re-inspects the file by path with fstat (regular file, owner, mode 0600, private
     parent, and the `-wal` and `-shm` files) and refuses if the path now points at a
     different file than the one opened, so a deleted, replaced or loosened database
-    fails closed.
+    fails closed. The checks are by path and do not bind SQLite's own descriptor; a
+    process running as the same user can still swap or edit the file.
 
     Thread safety: the connection is opened with check_same_thread=False and every
     call holds one lock, so a ledger may be shared between threads; calls serialize.
@@ -848,7 +852,8 @@ class ReadOnlyLedger(_LedgerFile):
     `PRAGMA user_version`. Before every call the file must be a regular file owned by
     `writer_uid`, mode exactly 0640, in group `group`, with one hard link and the
     SQLite header, and the same (device, inode) the connection was opened on; `-wal` and
-    `-shm` must exist and match the same owner, mode, group and link count.
+    `-shm` must exist and match the same owner, mode, group and link count. The checks
+    are by path and do not bind the descriptor SQLite opens.
 
     The database is in WAL mode, so a reader that cannot write the directory needs the
     `-wal` and `-shm` files to exist and be readable: the writer must hold the database
