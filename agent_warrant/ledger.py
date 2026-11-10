@@ -103,13 +103,15 @@ class LedgerUnavailable(LedgerError):
     """The database could not be read or written. Callers must fail closed."""
 
 
-def _check_parent(path: Path) -> None:
+def _check_parent(path: Path, group: int | None = None) -> None:
     try:
-        parent_mode = os.stat(path.parent).st_mode
+        parent = os.stat(path.parent)
     except OSError as err:
         raise LedgerUnavailable(f"cannot inspect parent directory: {err.strerror}") from err
-    if not stat.S_ISDIR(parent_mode) or parent_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
+    if group is not None and parent.st_gid != group:
+        raise LedgerUnavailable(f"parent directory group must be {group}, found {parent.st_gid}")
 
 
 @dataclass(frozen=True)
@@ -157,10 +159,11 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
     must be a regular file, owned by `policy.owner`, with mode exactly `policy.mode`, in
     group `policy.group` when set, with a single hard link, starting with the SQLite
     header (an empty file only when `allow_empty`, while creating); its parent directory
-    must not be group or other writable; the `-wal` and `-shm` files must pass
+    must not be group or other writable and, when `policy.group` is set, must be in that
+    group; the `-wal` and `-shm` files must pass
     `_check_sidecars`. A file is never chmod-ed here, only refused. The checks are by
     path: they do not inspect the descriptor SQLite opens itself."""
-    _check_parent(path)
+    _check_parent(path, policy.group)
     try:
         descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
     except OSError as err:
@@ -196,8 +199,10 @@ def _check_os_id(label: str, value: object) -> int:
 
 def _writer_policy(shared_group: int | None) -> _FilePolicy:
     """The writer's file policy. With `shared_group` the writer must run with that group
-    as its effective group, because SQLite creates `-wal` and `-shm` in the creating
-    process's group, not the database's."""
+    as its effective group and the parent directory must be in that group: SQLite
+    creates `-wal` and `-shm` in the creating process's group on Linux and in the parent
+    directory's group on BSD and macOS (and under a setgid directory on Linux), never in
+    the database's group."""
     if shared_group is None:
         return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
     group = _check_os_id("shared_group", shared_group)
@@ -214,7 +219,7 @@ def _create_file(path: Path, policy: _FilePolicy) -> None:
     and never creates through a symlink. With a shared group the file is moved to that
     group first and only then widened to 0640; if the group cannot be set the new file
     is removed."""
-    _check_parent(path)
+    _check_parent(path, policy.group)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as err:

@@ -6,7 +6,7 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ### Ledger
 
-- `TaskLedger.create(path, shared_group=gid)` and `TaskLedger.open(path, shared_group=gid)`: the file is mode 0640 in group `gid` instead of 0600. The writer must run with `gid` as its effective group (for example systemd `Group=`); otherwise it is refused before touching the file. The default is unchanged.
+- `TaskLedger.create(path, shared_group=gid)` and `TaskLedger.open(path, shared_group=gid)`: the file is mode 0640 in group `gid` instead of 0600. The writer must run with `gid` as its effective group (for example systemd `Group=`) and the parent directory must be in group `gid`; otherwise it is refused before touching the file. The default is unchanged.
 - The writer now also checks the `-wal` and `-shm` files when present: regular file (not a symlink), owner, the database's mode and group, one link.
 - `TaskLedger.open_read_only(path, writer_uid, group)` returns a `ReadOnlyLedger`: `O_RDONLY` file checks (owner `writer_uid`, mode 0640, group `group`, one link, SQLite header, same device and inode, and the same checks on `-wal` and `-shm`, which must exist), SQLite `mode=ro` with no attached databases and an authorizer allowing only reads, `is_revoked` and `reservation_readonly`; no PRAGMA writes, no transactions, no release of expired reservations; mutating methods raise `LedgerUnavailable`. It opens only while the writer holds the WAL database open. See `docs/spec/ledger.md`.
 - `TaskLedger.issued_expired(now)`: `issued` reservations whose expiry has passed, for restart recovery. Read-only.

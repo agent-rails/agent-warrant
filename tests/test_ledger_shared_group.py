@@ -215,3 +215,23 @@ def test_writer_opens_when_no_sidecar_exists(tmp_path):
     TaskLedger.create(path, shared_group=os.getegid()).close()
     assert not sidecar(path, "-wal").exists()
     assert TaskLedger.open(path, shared_group=os.getegid()).is_revoked(World().context()) is False
+
+
+def test_create_in_a_directory_of_another_group_is_refused_and_creates_nothing(tmp_path):
+    directory = tmp_path / "ledger-dir"
+    directory.mkdir(mode=0o750)
+    os.chown(directory, -1, other_member_group())
+    path = directory / "ledger.db"
+    with pytest.raises(LedgerUnavailable, match="parent directory group"):
+        TaskLedger.create(path, shared_group=os.getegid())
+    assert list(directory.iterdir()) == []
+
+
+def test_open_in_a_directory_of_another_group_is_refused(tmp_path):
+    directory = tmp_path / "ledger-dir"
+    directory.mkdir(mode=0o750)
+    path = directory / "ledger.db"
+    TaskLedger.create(path, shared_group=os.getegid()).close()
+    os.chown(directory, -1, other_member_group())
+    with pytest.raises(LedgerUnavailable, match="parent directory group"):
+        TaskLedger.open(path, shared_group=os.getegid())
