@@ -162,9 +162,39 @@ def test_every_public_writer_method_is_covered_by_the_reader():
     assert writer_methods - {"open", "create", "open_read_only", "is_revoked", "close"} == set(MUTATING)
 
 
-def test_the_reader_connection_refuses_sql_writes(reader):
-    with pytest.raises(sqlite3.OperationalError, match="readonly"):
-        reader._connection.execute("INSERT INTO revoked_tenants VALUES ('t1', 1)")
+REFUSED_STATEMENTS = [
+    "ATTACH '{out}/attached.db' AS other",
+    "ATTACH 'file:{out}/attached-uri.db?mode=rwc' AS other",
+    "VACUUM INTO '{out}/copy.db'",
+    "VACUUM",
+    "CREATE TABLE other (x)",
+    "CREATE TEMP TABLE other (x)",
+    "INSERT INTO revoked_tenants VALUES ('t1', 1)",
+    "UPDATE reservations SET state = 'done'",
+    "DELETE FROM reservations",
+    "PRAGMA user_version = 2",
+    "PRAGMA journal_mode = DELETE",
+    "BEGIN IMMEDIATE",
+]
+
+
+@pytest.mark.parametrize("statement", REFUSED_STATEMENTS)
+def test_the_reader_connection_refuses_statements_and_creates_no_file(writer, reader, world, path, tmp_path, statement):
+    writer.reserve(operation(world), [], NOW)
+    out = tmp_path / "out"
+    out.mkdir()
+    before = sorted(os.listdir(path.parent))
+    with pytest.raises(sqlite3.DatabaseError):
+        reader._connection.execute(statement.format(out=out)).fetchall()
+    assert os.listdir(out) == []
+    assert sorted(os.listdir(path.parent)) == before
+    assert stored_state(path, "op-1") == "reserved"
+    assert reader.reservation_readonly("t1", "task-1", "op-1").state == "reserved"
+
+
+@pytest.mark.skipif(not hasattr(sqlite3.Connection, "setlimit"), reason="Connection.setlimit needs Python 3.11")
+def test_the_reader_connection_allows_no_attached_database(reader):
+    assert reader._connection.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED) == 0
 
 
 def test_open_after_the_writer_closed_names_the_missing_wal(writer, path):

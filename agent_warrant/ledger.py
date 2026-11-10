@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -370,8 +371,7 @@ class _LedgerFile:
             connection = sqlite3.connect(
                 uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
             )
-            for pragma in self._CONNECT_PRAGMAS:
-                connection.execute(pragma)
+            self._configure(connection)
             after = _check_file(self._path, self._policy, self._allow_empty)
             if (after.st_dev, after.st_ino) != identity:
                 raise LedgerUnavailable("ledger file was replaced while connecting")
@@ -386,6 +386,10 @@ class _LedgerFile:
         self._identity = identity
         self._connection = connection
         self._pid = os.getpid()
+
+    def _configure(self, connection: sqlite3.Connection) -> None:
+        for pragma in self._CONNECT_PRAGMAS:
+            connection.execute(pragma)
 
     def close(self) -> None:
         """Release the SQLite connection for good. Idempotent; later calls raise
@@ -817,6 +821,16 @@ class TaskLedger(_LedgerFile):
             return None if row is None else BudgetStatus(budget=row[0], spent=row[1])
 
 
+def _authorize_read(
+    action: int, first: str | None, second: str | None, database: str | None, source: str | None
+) -> int:
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_PRAGMA and first == "user_version" and second is None:
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
 def _read_only(name: str) -> Callable[..., NoReturn]:
     def refuse(self: ReadOnlyLedger, *args: object, **kwargs: object) -> NoReturn:
         raise LedgerUnavailable(f"ledger is open read-only: {name} is not allowed")
@@ -829,10 +843,12 @@ class ReadOnlyLedger(_LedgerFile):
     """Read-only view of a ledger owned by another user, for a process that must check
     revocation and reservations but never change them. The file is opened O_RDONLY and
     SQLite with `mode=ro`; no PRAGMA is set, no transaction is begun and expired
-    reservations are not released. Before every call the file must be a regular file
-    owned by `writer_uid`, mode exactly 0640, in group `group`, with one hard link and
-    the SQLite header, and the same (device, inode) the connection was opened on;
-    `-wal` and `-shm` must exist and match the same owner, mode, group and link count.
+    reservations are not released. The connection allows no attached database and its
+    authorizer permits only SELECT, table reads, functions and reading
+    `PRAGMA user_version`. Before every call the file must be a regular file owned by
+    `writer_uid`, mode exactly 0640, in group `group`, with one hard link and the
+    SQLite header, and the same (device, inode) the connection was opened on; `-wal` and
+    `-shm` must exist and match the same owner, mode, group and link count.
 
     The database is in WAL mode, so a reader that cannot write the directory needs the
     `-wal` and `-shm` files to exist and be readable: the writer must hold the database
@@ -868,6 +884,11 @@ class ReadOnlyLedger(_LedgerFile):
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+    def _configure(self, connection: sqlite3.Connection) -> None:
+        if sys.version_info >= (3, 11):
+            connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+        connection.set_authorizer(_authorize_read)
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
