@@ -24,6 +24,7 @@ OPERATION_TYPE = "operation"
 OPERATION_VERSION = 1
 STATES = ("reserved", "issued", "done", "outcome_unknown", "released")
 BUSY_TIMEOUT_SECONDS = 30
+SIDECAR_SUFFIXES = ("-wal", "-shm")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -116,6 +117,37 @@ class _FilePolicy:
     owner: int
     mode: int
     group: int | None
+    require_sidecars: bool = False
+
+
+def _check_sidecars(path: Path, policy: _FilePolicy) -> None:
+    """Refuse `-wal` and `-shm` files that do not match `policy`: inspected with lstat
+    (a symlink is refused, not followed), each must be a regular file owned by
+    `policy.owner`, with mode exactly `policy.mode`, in group `policy.group` when set,
+    with a single hard link. A missing file is accepted unless `policy.require_sidecars`."""
+    for suffix in SIDECAR_SUFFIXES:
+        try:
+            info = os.lstat(path.with_name(path.name + suffix))
+        except FileNotFoundError:
+            if policy.require_sidecars:
+                raise LedgerUnavailable(
+                    f"ledger {suffix} file is missing: the writer is not holding the database open"
+                ) from None
+            continue
+        except OSError as err:
+            raise LedgerUnavailable(f"cannot inspect ledger {suffix} file: {err.strerror}") from err
+        if not stat.S_ISREG(info.st_mode):
+            raise LedgerUnavailable(f"ledger {suffix} file is not a regular file")
+        if info.st_uid != policy.owner:
+            raise LedgerUnavailable(f"ledger {suffix} file owner is not the expected user")
+        if stat.S_IMODE(info.st_mode) != policy.mode:
+            raise LedgerUnavailable(
+                f"ledger {suffix} file mode must be {oct(policy.mode)}, found {oct(stat.S_IMODE(info.st_mode))}"
+            )
+        if policy.group is not None and info.st_gid != policy.group:
+            raise LedgerUnavailable(f"ledger {suffix} file group must be {policy.group}, found {info.st_gid}")
+        if info.st_nlink != 1:
+            raise LedgerUnavailable(f"ledger {suffix} file has multiple hard links")
 
 
 def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> os.stat_result:
@@ -124,7 +156,8 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
     must be a regular file, owned by `policy.owner`, with mode exactly `policy.mode`, in
     group `policy.group` when set, with a single hard link, starting with the SQLite
     header (an empty file only when `allow_empty`, while creating); its parent directory
-    must not be group or other writable. A file is never chmod-ed here, only refused."""
+    must not be group or other writable; the `-wal` and `-shm` files must pass
+    `_check_sidecars`. A file is never chmod-ed here, only refused."""
     _check_parent(path)
     try:
         descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
@@ -149,6 +182,7 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
         raise LedgerUnavailable("ledger file has multiple hard links")
     if header != SQLITE_MAGIC and not (allow_empty and info.st_size == 0):
         raise LedgerUnavailable("ledger file is not a SQLite database")
+    _check_sidecars(path, policy)
     return info
 
 
@@ -159,11 +193,18 @@ def _check_os_id(label: str, value: object) -> int:
 
 
 def _writer_policy(shared_group: int | None) -> _FilePolicy:
+    """The writer's file policy. With `shared_group` the writer must run with that group
+    as its effective group, because SQLite creates `-wal` and `-shm` in the creating
+    process's group, not the database's."""
     if shared_group is None:
         return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
-    return _FilePolicy(
-        flags=os.O_RDWR, owner=os.geteuid(), mode=0o640, group=_check_os_id("shared_group", shared_group)
-    )
+    group = _check_os_id("shared_group", shared_group)
+    if os.getegid() != group:
+        raise LedgerUnavailable(
+            f"shared_group {group} must be the writer's effective group, found {os.getegid()}; "
+            "run the writer with the shared group as its primary group"
+        )
+    return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o640, group=group)
 
 
 def _create_file(path: Path, policy: _FilePolicy) -> None:
@@ -382,8 +423,9 @@ class TaskLedger(_LedgerFile):
     is opened after the file checks and reused for the ledger's lifetime (WAL journal,
     full synchronous commits, parameterized statements only). Every call still
     re-inspects the file by path with fstat (regular file, owner, mode 0600, private
-    parent) and refuses if the path now points at a different file than the one
-    opened, so a deleted, replaced or loosened database fails closed.
+    parent, and the `-wal` and `-shm` files) and refuses if the path now points at a
+    different file than the one opened, so a deleted, replaced or loosened database
+    fails closed.
 
     Thread safety: the connection is opened with check_same_thread=False and every
     call holds one lock, so a ledger may be shared between threads; calls serialize.
@@ -402,7 +444,7 @@ class TaskLedger(_LedgerFile):
         """Attach to an existing ledger. Never creates a file: a missing, replaced or
         schema-less database raises LedgerUnavailable. Use `create` for a new ledger.
         With `shared_group` (a gid) the file must have mode 0640 and that group instead
-        of mode 0600."""
+        of mode 0600, and the writer must run with that group as its effective group."""
         self._attach(Path(os.path.abspath(path)), _writer_policy(shared_group))
         with self._transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -424,8 +466,8 @@ class TaskLedger(_LedgerFile):
     @classmethod
     def create(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
         """Create a new ledger file with the schema. Refuses an existing path. The file
-        is 0600, or 0640 in group `shared_group` (a gid the effective user belongs to)
-        so that a reader in that group can use `open_read_only`."""
+        is 0600, or 0640 in group `shared_group` (which must be the effective group) so
+        that a reader in that group can use `open_read_only`."""
         target = Path(os.path.abspath(path))
         policy = _writer_policy(shared_group)
         _create_file(target, policy)
@@ -789,7 +831,8 @@ class ReadOnlyLedger(_LedgerFile):
     SQLite with `mode=ro`; no PRAGMA is set, no transaction is begun and expired
     reservations are not released. Before every call the file must be a regular file
     owned by `writer_uid`, mode exactly 0640, in group `group`, with one hard link and
-    the SQLite header, and the same (device, inode) the connection was opened on.
+    the SQLite header, and the same (device, inode) the connection was opened on;
+    `-wal` and `-shm` must exist and match the same owner, mode, group and link count.
 
     The database is in WAL mode, so a reader that cannot write the directory needs the
     `-wal` and `-shm` files to exist and be readable: the writer must hold the database
@@ -804,6 +847,7 @@ class ReadOnlyLedger(_LedgerFile):
             owner=_check_os_id("writer_uid", writer_uid),
             mode=0o640,
             group=_check_os_id("group", group),
+            require_sidecars=True,
         )
         self._attach(Path(os.path.abspath(path)), policy)
         try:

@@ -167,6 +167,63 @@ def test_the_reader_connection_refuses_sql_writes(reader):
         reader._connection.execute("INSERT INTO revoked_tenants VALUES ('t1', 1)")
 
 
+def test_open_after_the_writer_closed_names_the_missing_wal(writer, path):
+    writer.close()
+    with pytest.raises(LedgerUnavailable, match="writer is not holding the database open"):
+        TaskLedger.open_read_only(path, UID, GID)
+    assert not (path.parent / (path.name + "-wal")).exists()
+
+
+def other_member_group():
+    groups = [gid for gid in os.getgroups() if gid != GID]
+    if not groups:
+        pytest.skip("needs the current user to belong to a second group")
+    return groups[0]
+
+
+def sidecar(path, suffix):
+    return path.with_name(path.name + suffix)
+
+
+def loosen_mode(path, suffix):
+    os.chmod(sidecar(path, suffix), 0o644)
+
+
+def move_to_another_group(path, suffix):
+    os.chown(sidecar(path, suffix), -1, other_member_group())
+
+
+def hard_link(path, suffix):
+    os.link(sidecar(path, suffix), path.with_name("extra" + suffix))
+
+
+def replace_with_symlink(path, suffix):
+    target = path.with_name("moved" + suffix)
+    os.rename(sidecar(path, suffix), target)
+    sidecar(path, suffix).symlink_to(target)
+
+
+SIDECAR_TAMPERING = {
+    "mode": (loosen_mode, "mode must be 0o640"),
+    "group": (move_to_another_group, "group must be"),
+    "hard link": (hard_link, "has multiple hard links"),
+    "symlink": (replace_with_symlink, "is not a regular file"),
+}
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+@pytest.mark.parametrize("tampering", sorted(SIDECAR_TAMPERING))
+def test_reader_refuses_a_tampered_sidecar(writer, reader, path, world, suffix, tampering):
+    change, message = SIDECAR_TAMPERING[tampering]
+    change(path, suffix)
+    with pytest.raises(LedgerUnavailable, match=f"ledger {suffix} file {message}"):
+        reader.reservation_readonly("t1", "task-1", "op-1")
+    with pytest.raises(RevocationSourceUnreachable):
+        reader.is_revoked(world.context())
+    with pytest.raises(LedgerUnavailable, match=f"ledger {suffix} file {message}"):
+        TaskLedger.open_read_only(path, UID, GID)
+
+
 def test_reading_does_not_change_the_database_or_its_wal(writer, reader, world, path):
     writer.reserve(operation(world, expires_at=NOW + 5), [], NOW)
     wal = path.parent / (path.name + "-wal")
@@ -232,8 +289,14 @@ def test_empty_file_is_refused(path):
 def test_database_without_the_schema_is_refused(path):
     sqlite3.connect(path).execute("CREATE TABLE other (x)").connection.close()
     os.chmod(path, 0o640)
-    with pytest.raises(LedgerUnavailable, match="no schema"):
-        TaskLedger.open_read_only(path, UID, GID)
+    holder = sqlite3.connect(path)
+    try:
+        holder.execute("PRAGMA journal_mode = WAL")
+        holder.execute("SELECT * FROM other").fetchall()
+        with pytest.raises(LedgerUnavailable, match="no schema"):
+            TaskLedger.open_read_only(path, UID, GID)
+    finally:
+        holder.close()
 
 
 def test_missing_file_is_refused_and_not_created(path):
@@ -267,7 +330,6 @@ def test_every_read_rechecks_the_file(reader, path, world):
 
 
 def test_replaced_file_is_refused(reader, writer, path, world):
-    writer.close()
     copy = path.parent / "copy.db"
     shutil.copy(path, copy)
     os.chmod(copy, 0o640)

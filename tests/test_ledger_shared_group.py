@@ -52,12 +52,20 @@ def test_shared_group_create_is_0640_in_that_group(tmp_path):
     assert os.stat(path).st_gid == group
 
 
-def test_shared_group_create_sets_a_group_other_than_the_default(tmp_path):
+def test_create_with_a_member_group_other_than_the_effective_group_is_refused(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    with pytest.raises(LedgerUnavailable, match="effective group"):
+        TaskLedger.create(path, shared_group=other_member_group())
+    assert not path.exists()
+
+
+def test_open_with_a_member_group_other_than_the_effective_group_is_refused(tmp_path):
     path = private_dir(tmp_path) / "ledger.db"
     group = other_member_group()
-    TaskLedger.create(path, shared_group=group).revoke_tenant("t1", NOW)
-    assert (mode_of(path), os.stat(path).st_gid) == (0o640, group)
-    assert TaskLedger.open(path, shared_group=group).is_revoked(World().context()) is True
+    TaskLedger.create(path, shared_group=os.getegid()).close()
+    os.chown(path, -1, group)
+    with pytest.raises(LedgerUnavailable, match="effective group"):
+        TaskLedger.open(path, shared_group=group)
 
 
 def test_shared_group_ledger_reopens_and_works(tmp_path):
@@ -135,3 +143,75 @@ def test_malformed_shared_group_is_a_value_error(tmp_path, value):
     with pytest.raises(ValueError, match="shared_group"):
         TaskLedger.create(path, shared_group=value)
     assert not path.exists()
+
+
+def sidecar(path, suffix):
+    return path.with_name(path.name + suffix)
+
+
+def loosen_mode(path, suffix):
+    os.chmod(sidecar(path, suffix), 0o644)
+
+
+def move_to_another_group(path, suffix):
+    os.chown(sidecar(path, suffix), -1, other_member_group())
+
+
+def hard_link(path, suffix):
+    os.link(sidecar(path, suffix), path.with_name("extra" + suffix))
+
+
+def replace_with_symlink(path, suffix):
+    target = path.with_name("moved" + suffix)
+    os.rename(sidecar(path, suffix), target)
+    sidecar(path, suffix).symlink_to(target)
+
+
+SIDECAR_TAMPERING = {
+    "mode": (loosen_mode, "mode must be 0o640"),
+    "group": (move_to_another_group, "group must be"),
+    "hard link": (hard_link, "has multiple hard links"),
+    "symlink": (replace_with_symlink, "is not a regular file"),
+}
+
+
+def shared_writer(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path, shared_group=os.getegid())
+    ledger.open_task(World().verified(), NOW)
+    return path, ledger
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+@pytest.mark.parametrize("tampering", sorted(SIDECAR_TAMPERING))
+def test_writer_refuses_a_tampered_sidecar_on_the_next_call(tmp_path, suffix, tampering):
+    path, ledger = shared_writer(tmp_path)
+    change, message = SIDECAR_TAMPERING[tampering]
+    change(path, suffix)
+    with pytest.raises(LedgerUnavailable, match=f"ledger {suffix} file {message}"):
+        ledger.revoke_tenant("t1", NOW)
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_writer_refuses_to_open_beside_a_tampered_sidecar(tmp_path, suffix):
+    path, ledger = shared_writer(tmp_path)
+    loosen_mode(path, suffix)
+    with pytest.raises(LedgerUnavailable, match=f"ledger {suffix} file mode"):
+        TaskLedger.open(path, shared_group=os.getegid())
+
+
+def test_private_writer_refuses_a_loosened_sidecar(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger.open_task(World().verified(), NOW)
+    assert mode_of(sidecar(path, "-wal")) == 0o600
+    loosen_mode(path, "-wal")
+    with pytest.raises(LedgerUnavailable, match="ledger -wal file mode must be 0o600"):
+        ledger.revoke_tenant("t1", NOW)
+
+
+def test_writer_opens_when_no_sidecar_exists(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    TaskLedger.create(path, shared_group=os.getegid()).close()
+    assert not sidecar(path, "-wal").exists()
+    assert TaskLedger.open(path, shared_group=os.getegid()).is_revoked(World().context()) is False

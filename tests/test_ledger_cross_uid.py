@@ -25,7 +25,7 @@ SHARED_GROUP = os.environ.get("AGENT_WARRANT_SHARED_GROUP")
 pytestmark = pytest.mark.skipif(
     not (READER_USER and SHARED_GROUP),
     reason="needs AGENT_WARRANT_READER_USER, a second OS user reachable by sudo -n, and "
-    "AGENT_WARRANT_SHARED_GROUP, a group both users are in and the writer runs with",
+    "AGENT_WARRANT_SHARED_GROUP, a group both users are in and the writer's primary group",
 )
 
 READER_CODE = """
@@ -62,6 +62,20 @@ except LedgerUnavailable as err:
 print(json.dumps(report))
 """
 
+OTHER_PRIMARY_GROUP_WRITER_CODE = """
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+from agent_warrant.ledger import LedgerUnavailable, TaskLedger
+path, group = sys.argv[2], int(sys.argv[3])
+report = {"egid": os.getegid(), "groups": os.getgroups()}
+try:
+    TaskLedger.create(path, shared_group=group).close()
+    report["create"] = "created"
+except LedgerUnavailable as err:
+    report["create"] = str(err)
+print(json.dumps(report))
+"""
+
 
 def make_readable_tree(root):
     for directory, _, files in os.walk(root):
@@ -73,7 +87,7 @@ def make_readable_tree(root):
 @pytest.fixture
 def shared_world():
     gid = grp.getgrnam(SHARED_GROUP).gr_gid
-    assert os.getegid() == gid, "run the writer with the shared group as its effective group (sg)"
+    assert (os.getgid(), os.getegid()) == (gid, gid), "run the writer with the shared group as its primary group"
     code_root = Path(tempfile.mkdtemp(prefix="agent-warrant-code-"))
     state = Path(tempfile.mkdtemp(prefix="agent-warrant-state-"))
     try:
@@ -162,5 +176,35 @@ def test_another_user_reads_while_the_writer_holds_the_database_open(shared_worl
     assert not os.path.exists(f"{path}-wal")
     assert not os.path.exists(f"{path}-shm")
     after_close = read_as_other_user(code_root, path, gid, context)
-    assert "error" in after_close, after_close
+    assert "writer is not holding the database open" in after_close.get("error", ""), after_close
     assert "revoked" not in after_close
+
+
+def test_a_writer_whose_primary_group_is_not_the_shared_group_is_refused(shared_world):
+    code_root, path, gid = shared_world
+    result = subprocess.run(
+        [
+            "sudo",
+            "-n",
+            "-u",
+            pwd.getpwuid(os.geteuid()).pw_name,
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            OTHER_PRIMARY_GROUP_WRITER_CODE,
+            str(code_root),
+            str(path),
+            str(gid),
+        ],
+        capture_output=True,
+        cwd="/",
+        timeout=60,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["egid"] != gid, report
+    assert gid in report["groups"], report
+    assert "must be the writer's effective group" in report["create"], report
+    assert not path.exists()
