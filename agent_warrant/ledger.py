@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
+import sys
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 from urllib.parse import quote
 
 from .canonical import MAX_SAFE_INTEGER, signing_input
@@ -23,6 +25,7 @@ OPERATION_TYPE = "operation"
 OPERATION_VERSION = 1
 STATES = ("reserved", "issued", "done", "outcome_unknown", "released")
 BUSY_TIMEOUT_SECONDS = 30
+SIDECAR_SUFFIXES = ("-wal", "-shm")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -100,57 +103,135 @@ class LedgerUnavailable(LedgerError):
     """The database could not be read or written. Callers must fail closed."""
 
 
-def _check_parent(path: Path) -> None:
+def _check_parent(path: Path, group: int | None = None) -> None:
     try:
-        parent_mode = os.stat(path.parent).st_mode
+        parent = os.stat(path.parent)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot inspect parent directory: {err}") from err
-    if not stat.S_ISDIR(parent_mode) or parent_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise LedgerUnavailable(f"cannot inspect parent directory: {err.strerror}") from err
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
+    if group is not None and parent.st_gid != group:
+        raise LedgerUnavailable(f"parent directory group must be {group}, found {parent.st_gid}")
 
 
-def _check_file(path: Path, allow_empty: bool = False) -> os.stat_result:
-    """Refuse a database path that is not an existing private regular file we own.
-    The file is opened with O_NOFOLLOW (no symlink is followed) and never created, and
-    inspected with fstat: it must be a regular file, owned by the effective user, with
-    mode exactly 0600, with a single hard link, starting with the SQLite header (an empty file only when
-    `allow_empty`, while creating); its parent directory must not be group or other
-    writable. A file is never chmod-ed here, only refused."""
-    _check_parent(path)
+@dataclass(frozen=True)
+class _FilePolicy:
+    flags: int
+    owner: int
+    mode: int
+    group: int | None
+    require_sidecars: bool = False
+
+
+def _check_sidecars(path: Path, policy: _FilePolicy) -> None:
+    """Refuse `-wal` and `-shm` files that do not match `policy`: inspected with lstat
+    (a symlink is refused, not followed), each must be a regular file owned by
+    `policy.owner`, with mode exactly `policy.mode`, in group `policy.group` when set,
+    with a single hard link. A missing file is accepted unless `policy.require_sidecars`."""
+    for suffix in SIDECAR_SUFFIXES:
+        try:
+            info = os.lstat(path.with_name(path.name + suffix))
+        except FileNotFoundError:
+            if policy.require_sidecars:
+                raise LedgerUnavailable(
+                    f"ledger {suffix} file is missing: the writer is not holding the database open"
+                ) from None
+            continue
+        except OSError as err:
+            raise LedgerUnavailable(f"cannot inspect ledger {suffix} file: {err.strerror}") from err
+        if not stat.S_ISREG(info.st_mode):
+            raise LedgerUnavailable(f"ledger {suffix} file is not a regular file")
+        if info.st_uid != policy.owner:
+            raise LedgerUnavailable(f"ledger {suffix} file owner is not the expected user")
+        if stat.S_IMODE(info.st_mode) != policy.mode:
+            raise LedgerUnavailable(
+                f"ledger {suffix} file mode must be {oct(policy.mode)}, found {oct(stat.S_IMODE(info.st_mode))}"
+            )
+        if policy.group is not None and info.st_gid != policy.group:
+            raise LedgerUnavailable(f"ledger {suffix} file group must be {policy.group}, found {info.st_gid}")
+        if info.st_nlink != 1:
+            raise LedgerUnavailable(f"ledger {suffix} file has multiple hard links")
+
+
+def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> os.stat_result:
+    """Refuse a database path that does not match `policy`. The file is opened with
+    O_NOFOLLOW (no symlink is followed) and never created, and inspected with fstat: it
+    must be a regular file, owned by `policy.owner`, with mode exactly `policy.mode`, in
+    group `policy.group` when set, with a single hard link, starting with the SQLite
+    header (an empty file only when `allow_empty`, while creating); its parent directory
+    must not be group or other writable and, when `policy.group` is set, must be in that
+    group; the `-wal` and `-shm` files must pass
+    `_check_sidecars`. A file is never chmod-ed here, only refused. The checks are by
+    path: they do not inspect the descriptor SQLite opens itself."""
+    _check_parent(path, policy.group)
     try:
-        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot open ledger file: {err}") from err
+        raise LedgerUnavailable(f"cannot open ledger file: {err.strerror}") from err
     try:
         info = os.fstat(descriptor)
         header = os.pread(descriptor, len(SQLITE_MAGIC), 0)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot inspect ledger file: {err}") from err
+        raise LedgerUnavailable(f"cannot inspect ledger file: {err.strerror}") from err
     finally:
         os.close(descriptor)
     if not stat.S_ISREG(info.st_mode):
         raise LedgerUnavailable("ledger path is not a regular file")
-    if info.st_uid != os.geteuid():
-        raise LedgerUnavailable("ledger file owner is not the current user")
-    if stat.S_IMODE(info.st_mode) != 0o600:
-        raise LedgerUnavailable(f"ledger file mode must be 0600, found {oct(stat.S_IMODE(info.st_mode))}")
+    if info.st_uid != policy.owner:
+        raise LedgerUnavailable("ledger file owner is not the expected user")
+    if stat.S_IMODE(info.st_mode) != policy.mode:
+        raise LedgerUnavailable(f"ledger file mode must be {oct(policy.mode)}, found {oct(stat.S_IMODE(info.st_mode))}")
+    if policy.group is not None and info.st_gid != policy.group:
+        raise LedgerUnavailable(f"ledger file group must be {policy.group}, found {info.st_gid}")
     if info.st_nlink != 1:
         raise LedgerUnavailable("ledger file has multiple hard links")
     if header != SQLITE_MAGIC and not (allow_empty and info.st_size == 0):
         raise LedgerUnavailable("ledger file is not a SQLite database")
+    _check_sidecars(path, policy)
     return info
 
 
-def _create_file(path: Path) -> None:
+def _check_os_id(label: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _writer_policy(shared_group: int | None) -> _FilePolicy:
+    """The writer's file policy. With `shared_group` the writer must run with that group
+    as its effective group and the parent directory must be in that group: SQLite
+    creates `-wal` and `-shm` in the creating process's group on Linux and in the parent
+    directory's group on BSD and macOS (and under a setgid directory on Linux), never in
+    the database's group."""
+    if shared_group is None:
+        return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
+    group = _check_os_id("shared_group", shared_group)
+    if os.getegid() != group:
+        raise LedgerUnavailable(
+            f"shared_group {group} must be the writer's effective group, found {os.getegid()}; "
+            "run the writer with the shared group as its primary group"
+        )
+    return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o640, group=group)
+
+
+def _create_file(path: Path, policy: _FilePolicy) -> None:
     """Create a new empty ledger file with O_EXCL and mode 0600; never replaces a file
-    and never creates through a symlink."""
-    _check_parent(path)
+    and never creates through a symlink. With a shared group the file is moved to that
+    group first and only then widened to 0640; if the group cannot be set the new file
+    is removed."""
+    _check_parent(path, policy.group)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as err:
-        raise LedgerUnavailable(f"cannot create ledger file: {err}") from err
+        raise LedgerUnavailable(f"cannot create ledger file: {err.strerror}") from err
     try:
         os.fchmod(descriptor, 0o600)
+        if policy.group is not None:
+            os.fchown(descriptor, -1, policy.group)
+            os.fchmod(descriptor, policy.mode)
+    except OSError as err:
+        os.unlink(path)
+        raise LedgerUnavailable(f"cannot set the ledger file group: {err.strerror}") from err
     finally:
         os.close(descriptor)
 
@@ -264,66 +345,16 @@ class BudgetStatus:
         return self.budget - self.spent
 
 
-class TaskLedger:
-    """Single-host SQLite ledger of task budgets and revocations. One SQLite connection
-    is opened after the file checks and reused for the ledger's lifetime (WAL journal,
-    full synchronous commits, parameterized statements only). Every call still
-    re-inspects the file by path with fstat (regular file, owner, mode 0600, private
-    parent) and refuses if the path now points at a different file than the one
-    opened, so a deleted, replaced or loosened database fails closed.
+class _LedgerFile:
+    """Connection lifecycle shared by the writer and the reader: the file checks, the
+    (device, inode) identity re-check on every call, the fork guard and close()."""
 
-    Thread safety: the connection is opened with check_same_thread=False and every
-    call holds one lock, so a ledger may be shared between threads; calls serialize.
-    Do not share a ledger across fork(); open one per process. Several processes may
-    use the same file: writes are `BEGIN IMMEDIATE` transactions with a busy timeout.
-    Call close() (or use `with`) to release the connection.
+    _URI_MODE = "rw"
+    _CONNECT_PRAGMAS: tuple[str, ...] = ()
 
-    Revocations are insert-only: there is no un-revoke, and triggers abort any
-    UPDATE or DELETE on the revocation tables. The ledger trusts its caller to pass
-    only results of verify_root and chains from verify_chain; it does not re-verify
-    signatures."""
-
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        """Attach to an existing ledger. Never creates a file: a missing, replaced or
-        schema-less database raises LedgerUnavailable. Use `create` for a new ledger."""
-        self._attach(Path(os.path.abspath(path)))
-        with self._transaction() as connection:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
-            self.close()
-            raise LedgerUnavailable("ledger database has no schema")
-        if version != SCHEMA_VERSION:
-            self.close()
-            raise LedgerUnavailable(f"unsupported ledger schema version {version}")
-
-    @classmethod
-    def open(cls, path: str | os.PathLike[str]) -> TaskLedger:
-        return cls(path)
-
-    @classmethod
-    def create(cls, path: str | os.PathLike[str]) -> TaskLedger:
-        """Create a new private ledger file with the schema. Refuses an existing path."""
-        target = Path(os.path.abspath(path))
-        _create_file(target)
-        ledger = cls.__new__(cls)
-        ledger._allow_empty = True
-        ledger._attach(target)
-        with ledger._transaction() as connection:
-            for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
-                if statement.strip():
-                    connection.execute(statement)
-            for table in _INSERT_ONLY_TABLES:
-                for action in ("UPDATE", "DELETE"):
-                    connection.execute(
-                        f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} BEFORE {action} ON {table} "
-                        "BEGIN SELECT RAISE(ABORT, 'revocations are insert-only'); END"
-                    )
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        ledger._allow_empty = False
-        return ledger
-
-    def _attach(self, path: Path) -> None:
+    def _attach(self, path: Path, policy: _FilePolicy) -> None:
         self._path = path
+        self._policy = policy
         self._allow_empty = getattr(self, "_allow_empty", False)
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
@@ -334,22 +365,22 @@ class TaskLedger:
 
     def _reconnect(self) -> None:
         """Open the SQLite connection through the full file checks. The file's
-        (device, inode) is read before connecting, must match the identity this
-        ledger was first opened on, and must be unchanged after connecting."""
-        before = _check_file(self._path, self._allow_empty)
+        (device, inode) is read by path before connecting, must match the identity
+        this ledger was first opened on, and must be unchanged after connecting. This
+        does not bind the descriptor SQLite opens: a process running as the file's
+        owner, or root, can swap the file and restore it while connecting."""
+        before = _check_file(self._path, self._policy, self._allow_empty)
         identity = (before.st_dev, before.st_ino)
         if self._identity is not None and identity != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
-        uri = f"file:{quote(str(self._path), safe='/')}?mode=rw"
+        uri = f"file:{quote(str(self._path), safe='/')}?mode={self._URI_MODE}"
         connection = None
         try:
             connection = sqlite3.connect(
                 uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
             )
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = FULL")
-            connection.execute("PRAGMA foreign_keys = ON")
-            after = _check_file(self._path, self._allow_empty)
+            self._configure(connection)
+            after = _check_file(self._path, self._policy, self._allow_empty)
             if (after.st_dev, after.st_ino) != identity:
                 raise LedgerUnavailable("ledger file was replaced while connecting")
         except sqlite3.Error as err:
@@ -364,6 +395,10 @@ class TaskLedger:
         self._connection = connection
         self._pid = os.getpid()
 
+    def _configure(self, connection: sqlite3.Connection) -> None:
+        for pragma in self._CONNECT_PRAGMAS:
+            connection.execute(pragma)
+
     def close(self) -> None:
         """Release the SQLite connection for good. Idempotent; later calls raise
         LedgerUnavailable."""
@@ -372,12 +407,6 @@ class TaskLedger:
             connection, self._connection = self._connection, None
         if connection is not None:
             connection.close()
-
-    def __enter__(self) -> TaskLedger:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
 
     def _drop(self, connection: sqlite3.Connection) -> None:
         """Discard a connection that may be mid-transaction or otherwise unusable. The
@@ -392,13 +421,91 @@ class TaskLedger:
         if self._closed:
             raise LedgerUnavailable("ledger is closed")
         if os.getpid() != self._pid:
-            raise LedgerUnavailable("ledger connection belongs to another process; open a new TaskLedger after fork")
+            raise LedgerUnavailable("ledger connection belongs to another process; open a new ledger after fork")
         if self._connection is None:
             self._reconnect()
-        info = _check_file(self._path, self._allow_empty)
+        info = _check_file(self._path, self._policy, self._allow_empty)
         if (info.st_dev, info.st_ino) != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
         return self._connection
+
+
+class TaskLedger(_LedgerFile):
+    """Single-host SQLite ledger of task budgets and revocations. One SQLite connection
+    is opened after the file checks and reused for the ledger's lifetime (WAL journal,
+    full synchronous commits, parameterized statements only). Every call still
+    re-inspects the file by path with fstat (regular file, owner, mode 0600, private
+    parent, and the `-wal` and `-shm` files) and refuses if the path now points at a
+    different file than the one opened, so a deleted, replaced or loosened database
+    fails closed. The checks are by path and do not bind SQLite's own descriptor; a
+    process running as the same user can still swap or edit the file.
+
+    Thread safety: the connection is opened with check_same_thread=False and every
+    call holds one lock, so a ledger may be shared between threads; calls serialize.
+    Do not share a ledger across fork(); open one per process. Several processes may
+    use the same file: writes are `BEGIN IMMEDIATE` transactions with a busy timeout.
+    Call close() (or use `with`) to release the connection.
+
+    Revocations are insert-only: there is no un-revoke, and triggers abort any
+    UPDATE or DELETE on the revocation tables. The ledger trusts its caller to pass
+    only results of verify_root and chains from verify_chain; it does not re-verify
+    signatures."""
+
+    _CONNECT_PRAGMAS = ("PRAGMA journal_mode = WAL", "PRAGMA synchronous = FULL", "PRAGMA foreign_keys = ON")
+
+    def __init__(self, path: str | os.PathLike[str], shared_group: int | None = None) -> None:
+        """Attach to an existing ledger. Never creates a file: a missing, replaced or
+        schema-less database raises LedgerUnavailable. Use `create` for a new ledger.
+        With `shared_group` (a gid) the file must have mode 0640 and that group instead
+        of mode 0600, and the writer must run with that group as its effective group."""
+        self._attach(Path(os.path.abspath(path)), _writer_policy(shared_group))
+        with self._transaction() as connection:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version == 0:
+            self.close()
+            raise LedgerUnavailable("ledger database has no schema")
+        if version != SCHEMA_VERSION:
+            self.close()
+            raise LedgerUnavailable(f"unsupported ledger schema version {version}")
+
+    @classmethod
+    def open(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
+        return cls(path, shared_group)
+
+    @classmethod
+    def open_read_only(cls, path: str | os.PathLike[str], writer_uid: int, group: int) -> ReadOnlyLedger:
+        return ReadOnlyLedger(path, writer_uid, group)
+
+    @classmethod
+    def create(cls, path: str | os.PathLike[str], shared_group: int | None = None) -> TaskLedger:
+        """Create a new ledger file with the schema. Refuses an existing path. The file
+        is 0600, or 0640 in group `shared_group` (which must be the effective group) so
+        that a reader in that group can use `open_read_only`."""
+        target = Path(os.path.abspath(path))
+        policy = _writer_policy(shared_group)
+        _create_file(target, policy)
+        ledger = cls.__new__(cls)
+        ledger._allow_empty = True
+        ledger._attach(target, policy)
+        with ledger._transaction() as connection:
+            for statement in (_SCHEMA + _RESERVATION_SCHEMA).split(";"):
+                if statement.strip():
+                    connection.execute(statement)
+            for table in _INSERT_ONLY_TABLES:
+                for action in ("UPDATE", "DELETE"):
+                    connection.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} BEFORE {action} ON {table} "
+                        "BEGIN SELECT RAISE(ABORT, 'revocations are insert-only'); END"
+                    )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        ledger._allow_empty = False
+        return ledger
+
+    def __enter__(self) -> TaskLedger:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def _rollback_or_drop(self, connection: sqlite3.Connection) -> None:
         try:
@@ -714,6 +821,19 @@ class TaskLedger:
                 raise Refused("unknown task")
             return BudgetStatus(budget=row[0], spent=row[1])
 
+    def issued_expired(self, now: int) -> list[Reservation]:
+        """Every `issued` reservation, in any task, whose `expires_at <= now`, ordered by
+        tenant, task and op_id. Changes nothing: for restart recovery, the caller
+        decides each with `mark_done` or `mark_outcome_unknown`."""
+        _check_now(now)
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT tenant_id, task_id, op_id, digest, cost, state, expires_at FROM reservations "
+                "WHERE state = 'issued' AND expires_at <= ? ORDER BY tenant_id, task_id, op_id",
+                (now,),
+            ).fetchall()
+        return [Reservation(*row) for row in rows]
+
     def link_budget(self, link: ChainLink, now: int) -> BudgetStatus | None:
         """Spend against `link`'s cap, or None if the link has not been used yet."""
         _check_now(now)
@@ -721,3 +841,116 @@ class TaskLedger:
             self._release_expired(connection, link.tenant_id, link.task_id, now)
             row = connection.execute("SELECT cap, spent FROM links WHERE binding = ?", (link.binding(),)).fetchone()
             return None if row is None else BudgetStatus(budget=row[0], spent=row[1])
+
+
+def _authorize_read(
+    action: int, first: str | None, second: str | None, database: str | None, source: str | None
+) -> int:
+    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_PRAGMA and first == "user_version" and second is None:
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
+def _read_only(name: str) -> Callable[..., NoReturn]:
+    def refuse(self: ReadOnlyLedger, *args: object, **kwargs: object) -> NoReturn:
+        raise LedgerUnavailable(f"ledger is open read-only: {name} is not allowed")
+
+    refuse.__name__ = name
+    return refuse
+
+
+class ReadOnlyLedger(_LedgerFile):
+    """Read-only view of a ledger owned by another user, for a process that must check
+    revocation and reservations but never change them. The file is opened O_RDONLY and
+    SQLite with `mode=ro`; no PRAGMA is set, no transaction is begun and expired
+    reservations are not released. The connection allows no attached database and its
+    authorizer permits only SELECT, table reads, functions and reading
+    `PRAGMA user_version`. Before every call the file must be a regular file owned by
+    `writer_uid`, mode exactly 0640, in group `group`, with one hard link and the
+    SQLite header, and the same (device, inode) the connection was opened on; `-wal` and
+    `-shm` must exist and match the same owner, mode, group and link count. The checks
+    are by path and do not bind the descriptor SQLite opens.
+
+    The database is in WAL mode, so a reader that cannot write the directory needs the
+    `-wal` and `-shm` files to exist and be readable: the writer must hold the database
+    open. Otherwise every call raises LedgerUnavailable. Mutating methods raise
+    LedgerUnavailable."""
+
+    _URI_MODE = "ro"
+
+    def __init__(self, path: str | os.PathLike[str], writer_uid: int, group: int) -> None:
+        policy = _FilePolicy(
+            flags=os.O_RDONLY,
+            owner=_check_os_id("writer_uid", writer_uid),
+            mode=0o640,
+            group=_check_os_id("group", group),
+            require_sidecars=True,
+        )
+        self._attach(Path(os.path.abspath(path)), policy)
+        try:
+            with self._read() as connection:
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+        except BaseException:
+            self.close()
+            raise
+        if version == 0:
+            self.close()
+            raise LedgerUnavailable("ledger database has no schema")
+        if version != SCHEMA_VERSION:
+            self.close()
+            raise LedgerUnavailable(f"unsupported ledger schema version {version}")
+
+    def __enter__(self) -> ReadOnlyLedger:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _configure(self, connection: sqlite3.Connection) -> None:
+        if sys.version_info >= (3, 11):
+            connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
+        connection.set_authorizer(_authorize_read)
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            try:
+                yield self._live_connection()
+            except LedgerUnavailable:
+                raise
+            except Exception as err:
+                raise LedgerUnavailable(f"ledger error: {err}") from err
+
+    def is_revoked(self, context: ChainContext) -> bool:
+        """ChainRevocationChecker: True if the root, any link, the task or the tenant
+        is revoked. A database failure raises RevocationSourceUnreachable."""
+        bindings = (context.task_root, *context.link_bindings)
+        try:
+            with self._read() as connection:
+                return TaskLedger._revoked(connection, context.tenant_id, context.task_id, bindings)
+        except Exception as err:
+            raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
+
+    def reservation_readonly(self, tenant_id: str, task_id: str, op_id: str) -> Reservation | None:
+        """The stored reservation as it is in the file, or None. Expired `reserved`
+        rows are returned unchanged with their `expires_at`; the caller checks expiry."""
+        _check_id("tenant_id", tenant_id)
+        _check_id("task_id", task_id)
+        _check_id("op_id", op_id)
+        with self._read() as connection:
+            return TaskLedger._read_reservation(connection, tenant_id, task_id, op_id)
+
+    open_task = _read_only("open_task")
+    revoke = _read_only("revoke")
+    revoke_task = _read_only("revoke_task")
+    revoke_tenant = _read_only("revoke_tenant")
+    reserve = _read_only("reserve")
+    mark_issued = _read_only("mark_issued")
+    mark_done = _read_only("mark_done")
+    mark_outcome_unknown = _read_only("mark_outcome_unknown")
+    reservation = _read_only("reservation")
+    task_budget = _read_only("task_budget")
+    link_budget = _read_only("link_budget")
+    issued_expired = _read_only("issued_expired")

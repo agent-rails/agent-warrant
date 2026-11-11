@@ -27,3 +27,14 @@ jobs:
       - run: ruff check
       - run: ruff format --check
       - run: pytest -q
+      - run: |
+          sudo groupadd --system agent-warrant-ledger
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid agent-warrant-ledger agent-warrant-reader
+          sudo usermod --append --groups agent-warrant-ledger "$(id -un)"
+      - run: |
+          sudo -n --preserve-env=HOME,AGENT_WARRANT_READER_USER,AGENT_WARRANT_SHARED_GROUP \
+            setpriv --reuid="$(id -u)" --regid="$(getent group agent-warrant-ledger | cut -d: -f3)" --init-groups -- \
+            "$(command -v python)" -m pytest -v -rs tests/test_ledger_cross_uid.py
+        env:
+          AGENT_WARRANT_READER_USER: agent-warrant-reader
+          AGENT_WARRANT_SHARED_GROUP: agent-warrant-ledger
