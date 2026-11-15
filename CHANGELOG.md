@@ -4,6 +4,8 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-15
+
 ### Ledger
 
 - `TaskLedger.create(path, shared_group=gid)` and `TaskLedger.open(path, shared_group=gid)`: the file is mode 0640 in group `gid` instead of 0600. The writer must run with `gid` as its effective group (for example systemd `Group=`) and the parent directory must be in group `gid`; otherwise it is refused before touching the file. The default is unchanged.
