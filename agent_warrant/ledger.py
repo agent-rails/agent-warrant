@@ -103,13 +103,15 @@ class LedgerUnavailable(LedgerError):
     """The database could not be read or written. Callers must fail closed."""
 
 
-def _check_parent(path: Path, group: int | None = None) -> None:
+def _check_parent(path: Path, owner: int, group: int | None = None) -> None:
     try:
         parent = os.stat(path.parent)
     except OSError as err:
         raise LedgerUnavailable(f"cannot inspect parent directory: {err.strerror}") from err
     if not stat.S_ISDIR(parent.st_mode) or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise LedgerUnavailable("parent directory must exist and not be group or other writable")
+    if parent.st_uid not in (0, owner):
+        raise LedgerUnavailable(f"parent directory must be owned by root or uid {owner}, found {parent.st_uid}")
     if group is not None and parent.st_gid != group:
         raise LedgerUnavailable(f"parent directory group must be {group}, found {parent.st_gid}")
 
@@ -159,11 +161,11 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
     must be a regular file, owned by `policy.owner`, with mode exactly `policy.mode`, in
     group `policy.group` when set, with a single hard link, starting with the SQLite
     header (an empty file only when `allow_empty`, while creating); its parent directory
-    must not be group or other writable and, when `policy.group` is set, must be in that
-    group; the `-wal` and `-shm` files must pass
+    must be owned by root or `policy.owner`, must not be group or other writable and,
+    when `policy.group` is set, must be in that group; the `-wal` and `-shm` files must pass
     `_check_sidecars`. A file is never chmod-ed here, only refused. The checks are by
     path: they do not inspect the descriptor SQLite opens itself."""
-    _check_parent(path, policy.group)
+    _check_parent(path, policy.owner, policy.group)
     try:
         descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
     except OSError as err:
@@ -219,7 +221,7 @@ def _create_file(path: Path, policy: _FilePolicy) -> None:
     and never creates through a symlink. With a shared group the file is moved to that
     group first and only then widened to 0640; if the group cannot be set the new file
     is removed."""
-    _check_parent(path, policy.group)
+    _check_parent(path, policy.owner, policy.group)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as err:

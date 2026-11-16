@@ -9,6 +9,7 @@ import stat
 
 import pytest
 from test_ledger import NOW, World
+from test_ledger_files import parent_owned_by
 
 from agent_warrant import ledger as ledger_module
 from agent_warrant.encoding import sha256_b64u
@@ -312,9 +313,16 @@ def test_reading_does_not_change_the_database_or_its_wal(writer, reader, world, 
     assert digest() == before
 
 
-def test_wrong_owner_is_refused(writer, path):
-    with pytest.raises(LedgerUnavailable, match="owner"):
+def test_wrong_owner_is_refused(writer, path, monkeypatch):
+    parent_owned_by(monkeypatch, path.parent, UID + 1)
+    with pytest.raises(LedgerUnavailable, match="ledger file owner"):
         TaskLedger.open_read_only(path, UID + 1, GID)
+
+
+def test_a_parent_owned_by_another_uid_is_refused(writer, path, monkeypatch):
+    parent_owned_by(monkeypatch, path.parent, UID + 1)
+    with pytest.raises(LedgerUnavailable, match="parent directory must be owned"):
+        TaskLedger.open_read_only(path, UID, GID)
 
 
 def test_wrong_group_is_refused(writer, path):
