@@ -80,12 +80,28 @@ def test_directory_is_refused(tmp_path):
         TaskLedger(directory / "ledger.db")
 
 
+def parent_owned_by(monkeypatch, directory, uid):
+    real_stat = os.stat
+    parent = real_stat(directory)
+
+    def fake(target, *args, **kwargs):
+        info = real_stat(target, *args, **kwargs)
+        if (info.st_dev, info.st_ino) != (parent.st_dev, parent.st_ino):
+            return info
+        fields = list(info)
+        fields[stat.ST_UID] = uid
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(os, "stat", fake)
+
+
 def test_file_owned_by_another_user_is_refused(tmp_path, monkeypatch):
     path = private_dir(tmp_path) / "ledger.db"
     TaskLedger.create(path)
     real = os.geteuid()
     monkeypatch.setattr(os, "geteuid", lambda: real + 1)
-    with pytest.raises(LedgerUnavailable, match="owner"):
+    parent_owned_by(monkeypatch, path.parent, real + 1)
+    with pytest.raises(LedgerUnavailable, match="ledger file owner"):
         TaskLedger(path)
 
 
@@ -99,6 +115,17 @@ def test_group_or_other_writable_parent_is_refused(tmp_path, mode):
         assert not (directory / "ledger.db").exists()
     finally:
         os.chmod(directory, 0o700)
+
+
+def test_parent_owned_by_another_uid_is_refused(tmp_path, monkeypatch):
+    directory = private_dir(tmp_path)
+    TaskLedger.create(directory / "ledger.db").close()
+    parent_owned_by(monkeypatch, directory, os.geteuid() + 1)
+    with pytest.raises(LedgerUnavailable, match="parent directory must be owned"):
+        TaskLedger(directory / "ledger.db")
+    with pytest.raises(LedgerUnavailable, match="parent directory must be owned"):
+        TaskLedger.create(directory / "other.db")
+    assert not (directory / "other.db").exists()
 
 
 @pytest.mark.parametrize("mode", [0o755, 0o750, 0o700])

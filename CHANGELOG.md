@@ -4,6 +4,10 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Ledger
+
+- The parent directory of a ledger must now be owned by root or the ledger's owner (the effective user for the writer, `writer_uid` for `open_read_only`). Another user owning it could rename the ledger even when the directory is not group or other writable.
+
 ## [0.2.0] - 2026-11-15
 
 ### Ledger
