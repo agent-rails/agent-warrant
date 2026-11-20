@@ -230,6 +230,21 @@ def test_open_after_the_writer_closed_names_the_missing_wal(writer, path):
     assert not (path.parent / (path.name + "-wal")).exists()
 
 
+def test_a_reader_reconnects_on_the_first_call_after_the_sidecars_return(writer, reader, path, world):
+    for suffix in ("-wal", "-shm"):
+        sidecar(path, suffix).unlink()
+    with pytest.raises(LedgerUnavailable, match="writer is not holding the database open"):
+        reader.reservation_readonly("t1", "task-1", "op-1")
+    assert reader._connection is None
+    writer.close()
+    restarted = TaskLedger.open(path, shared_group=GID)
+    try:
+        restarted.reserve(operation(world), [], NOW)
+        assert reader.reservation_readonly("t1", "task-1", "op-1") is not None
+    finally:
+        restarted.close()
+
+
 def missing_file(path):
     return path
 

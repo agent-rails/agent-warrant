@@ -442,13 +442,17 @@ class _LedgerFile:
             raise LedgerUnavailable("ledger connection belongs to another process; open a new ledger after fork")
         if self._connection is None:
             self._reconnect()
-        info, sidecars = _check_file(self._path, self._policy, self._allow_empty)
-        if (info.st_dev, info.st_ino) != self._identity:
-            raise LedgerUnavailable("ledger file was replaced")
-        if sidecars != self._sidecars:
-            self._drop(self._connection)
-            raise LedgerUnavailable("ledger -wal or -shm file was removed or replaced while in use")
-        return self._connection
+        connection = self._connection
+        try:
+            info, sidecars = _check_file(self._path, self._policy, self._allow_empty)
+            if (info.st_dev, info.st_ino) != self._identity:
+                raise LedgerUnavailable("ledger file was replaced")
+            if sidecars != self._sidecars:
+                raise LedgerUnavailable("ledger -wal or -shm file was removed or replaced while in use")
+        except LedgerUnavailable:
+            self._drop(connection)
+            raise
+        return connection
 
 
 class TaskLedger(_LedgerFile):

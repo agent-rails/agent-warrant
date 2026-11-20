@@ -389,6 +389,22 @@ def test_a_removed_wal_fails_the_next_call_and_the_call_after_reconnects(tmp_pat
     ledger.close()
 
 
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_a_sidecar_replaced_by_a_valid_looking_copy_fails_the_next_call(tmp_path, suffix):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger.revoke_tenant("t1", NOW)
+    sidecar = path.parent / f"ledger.db{suffix}"
+    copy = path.parent / f"copy{suffix}"
+    copy.write_bytes(sidecar.read_bytes())
+    os.chmod(copy, 0o600)
+    os.replace(copy, sidecar)
+    with pytest.raises(LedgerUnavailable, match="removed or replaced while in use"):
+        ledger.revoke_tenant("t2", NOW)
+    assert ledger._connection is None
+    ledger.close()
+
+
 class FlakyConnection:
     """Delegates to a real sqlite3 connection but raises on chosen statements."""
 
