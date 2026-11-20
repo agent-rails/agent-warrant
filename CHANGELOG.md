@@ -7,6 +7,8 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 ### Ledger
 
 - Breaking: the parent directory of a ledger must now be owned by root or the ledger's owner (the effective user for the writer, `writer_uid` for `open_read_only`). Another user owning it could rename the ledger even when the directory is not group or other writable. A root writer in a directory owned by another user is now refused; move the ledger into a directory owned by the writer, or by root for a root writer.
+- Fix: the file checks no longer open the database. Closing that descriptor released every POSIX lock SQLite held on the file in the process, so another process closing its connection (for example a second `TaskLedger.open(...).close()`) checkpointed and deleted `-wal` and `-shm` while this process kept writing to the deleted files: its writes were invisible to other connections and lost when it closed. Reproduced on Linux (SQLite 3.46.1); not reproduced on macOS. The file is now inspected with `lstat` only, SQLite checks the header when connecting, and a `-wal` or `-shm` file that is removed or replaced while connected closes the connection and fails the call; the next call reconnects.
+- Changed: a database header overwritten in place after the connection is open is no longer detected on the next call. This is the same-user modification the spec already excludes. Messages for a missing or symlinked path are now `cannot inspect ledger file` and `ledger path is not a regular file`.
 
 ## [0.2.0] - 2026-11-15
 

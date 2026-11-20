@@ -9,6 +9,7 @@ import sys
 import pytest
 from test_ledger import NOW, World
 
+from agent_warrant import ledger as ledger_module
 from agent_warrant.encoding import sha256_b64u
 from agent_warrant.exceptions import RevocationSourceUnreachable
 from agent_warrant.ledger import LedgerUnavailable, Operation, TaskLedger
@@ -366,16 +367,26 @@ def test_a_ledger_is_safe_to_share_between_threads(tmp_path):
     assert ledger.task_budget("t1", "task-1", NOW).spent == 80
 
 
-def test_overwriting_the_header_in_place_fails_closed(tmp_path):
+def test_a_database_whose_header_was_overwritten_is_refused_on_open(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    TaskLedger.create(path).close()
+    with open(path, "r+b") as handle:
+        handle.write(b"garbage-garbage-")
+    with pytest.raises(LedgerUnavailable, match="not a SQLite database"):
+        TaskLedger.open(path)
+
+
+def test_a_removed_wal_fails_the_next_call_and_the_call_after_reconnects(tmp_path):
     path = private_dir(tmp_path) / "ledger.db"
     ledger = TaskLedger.create(path)
     ledger.revoke_tenant("t1", NOW)
-    with open(path, "r+b") as handle:
-        handle.write(b"garbage-garbage-")
-    with pytest.raises(RevocationSourceUnreachable):
-        ledger.is_revoked(World().context())
-    with pytest.raises(LedgerUnavailable, match="not a SQLite database"):
+    for suffix in ("-wal", "-shm"):
+        (path.parent / f"ledger.db{suffix}").unlink()
+    with pytest.raises(LedgerUnavailable, match="removed or replaced while in use"):
         ledger.revoke_tenant("t2", NOW)
+    ledger.revoke_tenant("t3", NOW)
+    assert (path.parent / "ledger.db-wal").exists()
+    ledger.close()
 
 
 class FlakyConnection:
@@ -529,3 +540,47 @@ def test_a_hard_linked_database_is_refused(tmp_path):
     os.link(path, directory / "other-name.db")
     with pytest.raises(LedgerUnavailable, match="hard links"):
         TaskLedger.open(path)
+
+
+def test_ledger_calls_never_open_a_descriptor_on_the_database(tmp_path, monkeypatch):
+    path = private_dir(tmp_path) / "ledger.db"
+    real_open = os.open
+    opened = []
+
+    def recording_open(target, flags, *args, **kwargs):
+        if os.fspath(target) == str(path):
+            opened.append(flags)
+        return real_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.os, "open", recording_open)
+    ledger = TaskLedger.create(path)
+    assert len(opened) == 1 and opened[0] & os.O_CREAT
+    opened.clear()
+    ledger.revoke_tenant("t1", NOW)
+    ledger.is_revoked(World().context())
+    ledger.close()
+    TaskLedger.open(path).close()
+    assert opened == []
+
+
+OTHER_PROCESS_OPEN_AND_CLOSE = """
+import sys
+from agent_warrant.ledger import TaskLedger
+TaskLedger.open(sys.argv[1]).close()
+"""
+
+
+def test_another_process_closing_the_ledger_keeps_this_writers_wal(tmp_path):
+    path = private_dir(tmp_path) / "ledger.db"
+    ledger = TaskLedger.create(path)
+    ledger.revoke_tenant("before", NOW)
+    subprocess.run([sys.executable, "-c", OTHER_PROCESS_OPEN_AND_CLOSE, str(path)], check=True, timeout=60)
+    assert (path.parent / "ledger.db-wal").exists()
+    ledger.revoke_tenant("after", NOW)
+    reader = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = reader.execute("SELECT tenant_id FROM revoked_tenants ORDER BY tenant_id").fetchall()
+    finally:
+        reader.close()
+    ledger.close()
+    assert rows == [("after",), ("before",)]

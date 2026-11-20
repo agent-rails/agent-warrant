@@ -200,21 +200,27 @@ def test_the_reader_connection_allows_no_attached_database(reader):
     assert reader._connection.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED) == 0
 
 
-def test_the_reader_opens_the_file_read_only(writer, path, monkeypatch):
+def test_the_reader_opens_no_descriptor_and_connects_read_only(writer, path, monkeypatch):
     real_open = os.open
-    flags_seen = []
+    real_connect = sqlite3.connect
+    opened = []
+    uris = []
 
     def recording_open(target, flags, *args, **kwargs):
         if os.fspath(target) == str(path):
-            flags_seen.append(flags)
+            opened.append(flags)
         return real_open(target, flags, *args, **kwargs)
 
+    def recording_connect(database, *args, **kwargs):
+        uris.append(database)
+        return real_connect(database, *args, **kwargs)
+
     monkeypatch.setattr(ledger_module.os, "open", recording_open)
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", recording_connect)
     with TaskLedger.open_read_only(path, UID, GID) as reader:
         reader.reservation_readonly("t1", "task-1", "op-1")
-    assert len(flags_seen) >= 3
-    assert all(flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) == os.O_RDONLY for flags in flags_seen)
-    assert all(flags & os.O_NOFOLLOW and not flags & os.O_CREAT for flags in flags_seen)
+    assert opened == []
+    assert len(uris) == 1 and uris[0].endswith("?mode=ro")
 
 
 def test_open_after_the_writer_closed_names_the_missing_wal(writer, path):
@@ -358,6 +364,9 @@ def test_file_without_the_sqlite_header_is_refused(path):
     path.parent.mkdir(exist_ok=True)
     path.write_bytes(b"not a database at all, just bytes")
     os.chmod(path, 0o640)
+    for suffix in ("-wal", "-shm"):
+        sidecar(path, suffix).touch()
+        os.chmod(sidecar(path, suffix), 0o640)
     with pytest.raises(LedgerUnavailable, match="not a SQLite database"):
         TaskLedger.open_read_only(path, UID, GID)
 
@@ -383,7 +392,7 @@ def test_database_without_the_schema_is_refused(path):
 
 
 def test_missing_file_is_refused_and_not_created(path):
-    with pytest.raises(LedgerUnavailable, match="cannot open"):
+    with pytest.raises(LedgerUnavailable, match="cannot inspect"):
         TaskLedger.open_read_only(path, UID, GID)
     assert not path.exists()
 
@@ -391,7 +400,7 @@ def test_missing_file_is_refused_and_not_created(path):
 def test_symlink_is_not_followed(writer, path):
     link = path.parent / "link.db"
     link.symlink_to(path)
-    with pytest.raises(LedgerUnavailable, match="cannot open"):
+    with pytest.raises(LedgerUnavailable, match="not a regular file"):
         TaskLedger.open_read_only(link, UID, GID)
 
 
