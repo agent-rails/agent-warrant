@@ -20,12 +20,12 @@ from .scope import validate_entry
 from .task_root import TaskRootResult
 
 SCHEMA_VERSION = 1
-SQLITE_MAGIC = b"SQLite format 3\x00"
 OPERATION_TYPE = "operation"
 OPERATION_VERSION = 1
 STATES = ("reserved", "issued", "done", "outcome_unknown", "released")
 BUSY_TIMEOUT_SECONDS = 30
 SIDECAR_SUFFIXES = ("-wal", "-shm")
+NOT_A_DATABASE = "ledger file is not a SQLite database"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -118,18 +118,22 @@ def _check_parent(path: Path, owner: int, group: int | None = None) -> None:
 
 @dataclass(frozen=True)
 class _FilePolicy:
-    flags: int
     owner: int
     mode: int
     group: int | None
     require_sidecars: bool = False
 
 
-def _check_sidecars(path: Path, policy: _FilePolicy) -> None:
+_Sidecars = tuple[tuple[int, int] | None, ...]
+
+
+def _check_sidecars(path: Path, policy: _FilePolicy) -> _Sidecars:
     """Refuse `-wal` and `-shm` files that do not match `policy`: inspected with lstat
     (a symlink is refused, not followed), each must be a regular file owned by
     `policy.owner`, with mode exactly `policy.mode`, in group `policy.group` when set,
-    with a single hard link. A missing file is accepted unless `policy.require_sidecars`."""
+    with a single hard link. A missing file is accepted unless `policy.require_sidecars`.
+    Returns each file's (device, inode), or None for a missing one."""
+    identities: list[tuple[int, int] | None] = []
     for suffix in SIDECAR_SUFFIXES:
         try:
             info = os.lstat(path.with_name(path.name + suffix))
@@ -138,6 +142,7 @@ def _check_sidecars(path: Path, policy: _FilePolicy) -> None:
                 raise LedgerUnavailable(
                     f"ledger {suffix} file is missing: the writer is not holding the database open"
                 ) from None
+            identities.append(None)
             continue
         except OSError as err:
             raise LedgerUnavailable(f"cannot inspect ledger {suffix} file: {err.strerror}") from err
@@ -153,30 +158,29 @@ def _check_sidecars(path: Path, policy: _FilePolicy) -> None:
             raise LedgerUnavailable(f"ledger {suffix} file group must be {policy.group}, found {info.st_gid}")
         if info.st_nlink != 1:
             raise LedgerUnavailable(f"ledger {suffix} file has multiple hard links")
+        identities.append((info.st_dev, info.st_ino))
+    return tuple(identities)
 
 
-def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> os.stat_result:
-    """Refuse a database path that does not match `policy`. The file is opened with
-    O_NOFOLLOW (no symlink is followed) and never created, and inspected with fstat: it
-    must be a regular file, owned by `policy.owner`, with mode exactly `policy.mode`, in
-    group `policy.group` when set, with a single hard link, starting with the SQLite
-    header (an empty file only when `allow_empty`, while creating); its parent directory
-    must be owned by root or `policy.owner`, must not be group or other writable and,
-    when `policy.group` is set, must be in that group; the `-wal` and `-shm` files must pass
-    `_check_sidecars`. A file is never chmod-ed here, only refused. The checks are by
-    path: they do not inspect the descriptor SQLite opens itself."""
+def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> tuple[os.stat_result, _Sidecars]:
+    """Refuse a database path that does not match `policy`. The file is inspected with
+    lstat and never opened here: closing any descriptor on the database would release
+    the POSIX locks SQLite holds on it in this process, and another process closing its
+    connection could then delete the `-wal` and `-shm` files this one is still using.
+    It must be a regular file (a symlink is refused, not followed), owned by
+    `policy.owner`, with mode exactly `policy.mode`, in group `policy.group` when set,
+    with a single hard link, and not empty (unless `allow_empty`, while creating); its
+    parent directory must be owned by root or `policy.owner`, must not be group or other
+    writable and, when `policy.group` is set, must be in that group; the `-wal` and
+    `-shm` files must pass `_check_sidecars`, whose identities are returned with the
+    file's stat. SQLite checks the database header when the connection is opened. A
+    file is never chmod-ed here, only refused. The checks are by path: they do not
+    inspect the descriptor SQLite opens itself."""
     _check_parent(path, policy.owner, policy.group)
     try:
-        descriptor = os.open(path, policy.flags | os.O_NOFOLLOW)
-    except OSError as err:
-        raise LedgerUnavailable(f"cannot open ledger file: {err.strerror}") from err
-    try:
-        info = os.fstat(descriptor)
-        header = os.pread(descriptor, len(SQLITE_MAGIC), 0)
+        info = os.lstat(path)
     except OSError as err:
         raise LedgerUnavailable(f"cannot inspect ledger file: {err.strerror}") from err
-    finally:
-        os.close(descriptor)
     if not stat.S_ISREG(info.st_mode):
         raise LedgerUnavailable("ledger path is not a regular file")
     if info.st_uid != policy.owner:
@@ -187,10 +191,15 @@ def _check_file(path: Path, policy: _FilePolicy, allow_empty: bool = False) -> o
         raise LedgerUnavailable(f"ledger file group must be {policy.group}, found {info.st_gid}")
     if info.st_nlink != 1:
         raise LedgerUnavailable("ledger file has multiple hard links")
-    if header != SQLITE_MAGIC and not (allow_empty and info.st_size == 0):
-        raise LedgerUnavailable("ledger file is not a SQLite database")
-    _check_sidecars(path, policy)
-    return info
+    if info.st_size == 0 and not allow_empty:
+        raise LedgerUnavailable(NOT_A_DATABASE)
+    return info, _check_sidecars(path, policy)
+
+
+def _database_error(err: sqlite3.Error) -> str:
+    if str(err) == "file is not a database":
+        return NOT_A_DATABASE
+    return f"ledger database error: {err}"
 
 
 def _check_os_id(label: str, value: object) -> int:
@@ -206,14 +215,14 @@ def _writer_policy(shared_group: int | None) -> _FilePolicy:
     directory's group on BSD and macOS (and under a setgid directory on Linux), never in
     the database's group."""
     if shared_group is None:
-        return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o600, group=None)
+        return _FilePolicy(owner=os.geteuid(), mode=0o600, group=None)
     group = _check_os_id("shared_group", shared_group)
     if os.getegid() != group:
         raise LedgerUnavailable(
             f"shared_group {group} must be the writer's effective group, found {os.getegid()}; "
             "run the writer with the shared group as its primary group"
         )
-    return _FilePolicy(flags=os.O_RDWR, owner=os.geteuid(), mode=0o640, group=group)
+    return _FilePolicy(owner=os.geteuid(), mode=0o640, group=group)
 
 
 def _create_file(path: Path, policy: _FilePolicy) -> None:
@@ -362,6 +371,7 @@ class _LedgerFile:
         self._connection: sqlite3.Connection | None = None
         self._closed = False
         self._identity: tuple[int, int] | None = None
+        self._sidecars: _Sidecars = ()
         self._pid = os.getpid()
         self._reconnect()
 
@@ -370,8 +380,10 @@ class _LedgerFile:
         (device, inode) is read by path before connecting, must match the identity
         this ledger was first opened on, and must be unchanged after connecting. This
         does not bind the descriptor SQLite opens: a process running as the file's
-        owner, or root, can swap the file and restore it while connecting."""
-        before = _check_file(self._path, self._policy, self._allow_empty)
+        owner, or root, can swap the file and restore it while connecting. The `-wal`
+        and `-shm` files must exist once connected; their (device, inode) are kept and
+        checked on every call."""
+        before, _ = _check_file(self._path, self._policy, self._allow_empty)
         identity = (before.st_dev, before.st_ino)
         if self._identity is not None and identity != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
@@ -382,18 +394,22 @@ class _LedgerFile:
                 uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS, isolation_level=None, check_same_thread=False
             )
             self._configure(connection)
-            after = _check_file(self._path, self._policy, self._allow_empty)
+            connection.execute("PRAGMA user_version").fetchone()
+            after, sidecars = _check_file(self._path, self._policy, self._allow_empty)
             if (after.st_dev, after.st_ino) != identity:
                 raise LedgerUnavailable("ledger file was replaced while connecting")
+            if None in sidecars:
+                raise LedgerUnavailable("ledger -wal or -shm file is missing after connecting")
         except sqlite3.Error as err:
             if connection is not None:
                 connection.close()
-            raise LedgerUnavailable(f"ledger database error: {err}") from err
+            raise LedgerUnavailable(_database_error(err)) from err
         except BaseException:
             if connection is not None:
                 connection.close()
             raise
         self._identity = identity
+        self._sidecars = sidecars
         self._connection = connection
         self._pid = os.getpid()
 
@@ -426,9 +442,12 @@ class _LedgerFile:
             raise LedgerUnavailable("ledger connection belongs to another process; open a new ledger after fork")
         if self._connection is None:
             self._reconnect()
-        info = _check_file(self._path, self._policy, self._allow_empty)
+        info, sidecars = _check_file(self._path, self._policy, self._allow_empty)
         if (info.st_dev, info.st_ino) != self._identity:
             raise LedgerUnavailable("ledger file was replaced")
+        if sidecars != self._sidecars:
+            self._drop(self._connection)
+            raise LedgerUnavailable("ledger -wal or -shm file was removed or replaced while in use")
         return self._connection
 
 
@@ -436,9 +455,10 @@ class TaskLedger(_LedgerFile):
     """Single-host SQLite ledger of task budgets and revocations. One SQLite connection
     is opened after the file checks and reused for the ledger's lifetime (WAL journal,
     full synchronous commits, parameterized statements only). Every call still
-    re-inspects the file by path with fstat (regular file, owner, mode 0600, private
-    parent, and the `-wal` and `-shm` files) and refuses if the path now points at a
-    different file than the one opened, so a deleted, replaced or loosened database
+    re-inspects the file by path with lstat, never opening it (regular file, owner,
+    mode 0600, private parent, and the `-wal` and `-shm` files) and refuses if the path
+    now points at a different file than the one opened, or a `-wal` or `-shm` file than
+    the ones present after connecting, so a deleted, replaced or loosened database
     fails closed. The checks are by path and do not bind SQLite's own descriptor; a
     process running as the same user can still swap or edit the file.
 
@@ -865,14 +885,15 @@ def _read_only(name: str) -> Callable[..., NoReturn]:
 
 class ReadOnlyLedger(_LedgerFile):
     """Read-only view of a ledger owned by another user, for a process that must check
-    revocation and reservations but never change them. The file is opened O_RDONLY and
-    SQLite with `mode=ro`; no PRAGMA is set, no transaction is begun and expired
+    revocation and reservations but never change them. The file is never opened by
+    this class; SQLite opens it with `mode=ro`; no PRAGMA is set, no transaction is begun and expired
     reservations are not released. The connection allows no attached database and its
     authorizer permits only SELECT, table reads, functions and reading
     `PRAGMA user_version`. Before every call the file must be a regular file owned by
-    `writer_uid`, mode exactly 0640, in group `group`, with one hard link and the
-    SQLite header, and the same (device, inode) the connection was opened on; `-wal` and
-    `-shm` must exist and match the same owner, mode, group and link count. The checks
+    `writer_uid`, mode exactly 0640, in group `group`, with one hard link, not empty,
+    and the same (device, inode) the connection was opened on; `-wal` and `-shm` must
+    exist, match the same owner, mode, group and link count, and be the same files as
+    when connecting. SQLite checks the header when connecting. The checks
     are by path and do not bind the descriptor SQLite opens.
 
     The database is in WAL mode, so a reader that cannot write the directory needs the
@@ -884,7 +905,6 @@ class ReadOnlyLedger(_LedgerFile):
 
     def __init__(self, path: str | os.PathLike[str], writer_uid: int, group: int) -> None:
         policy = _FilePolicy(
-            flags=os.O_RDONLY,
             owner=_check_os_id("writer_uid", writer_uid),
             mode=0o640,
             group=_check_os_id("group", group),
