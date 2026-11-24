@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import binascii
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
+from .canonical import MAX_SAFE_INTEGER, CanonicalCopy, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable
 from .identity import decode_public_key, encode_public_key, is_valid_public_key
 from .resolver import IssuerResolver
-from .scope import scope_narrows, validate_scope
+from .scope import Permission, permissions_narrow, permissions_of, scope_version
 from .task_root import (
     CLOCK_SKEW_SECONDS,
     MAX_CHAIN_DEPTH,
@@ -24,7 +24,7 @@ from .task_root import (
 from .trust import IssuerTrustPolicy
 
 LINK_TYPE = "chain-link"
-LINK_VERSION = 1
+LINK_VERSION = 2
 POSSESSION_TYPE = "possession"
 POSSESSION_VERSION = 1
 MAX_ENCODED_LINK_BYTES = 16_384
@@ -56,7 +56,11 @@ class ChainLink:
     of the previous record (the TaskRoot for the first link, otherwise the previous
     link) and `task_root` is the TaskRoot's binding, so a link fits exactly one chain
     position in one task and tenant. `proof` is the issuer's signature over
-    signing_input("chain-link", 1, body)."""
+    signing_input("chain-link", version, body), where version is the scope's version:
+    2 for a permissions scope, 1 for a v1 scope. `permissions` and `scope_version` are
+    an immutable view of `scope` computed at construction. `scope` is held as canonical
+    bytes and each read returns a fresh copy, so mutating a value read from it changes
+    nothing."""
 
     task_id: str
     tenant_id: str
@@ -64,18 +68,24 @@ class ChainLink:
     parent_hash: str
     issuer: str
     subject: str
-    scope: dict[str, Any]
+    scope: dict[str, Any] = CanonicalCopy()  # type: ignore[assignment]
     budget: int
     depth: int
     issued_at: int
     expires_at: int
     proof: str
+    permissions: tuple[Permission, ...] = field(init=False, repr=False, compare=False)
+    scope_version: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "permissions", _permissions(self.scope))
+        object.__setattr__(self, "scope_version", scope_version(self.scope))
 
     def signable_fields(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in _LINK_BODY_FIELDS}
 
     def signing_bytes(self) -> bytes:
-        return signing_input(LINK_TYPE, LINK_VERSION, self.signable_fields())
+        return signing_input(LINK_TYPE, self.scope_version, self.signable_fields())
 
     def binding(self) -> str:
         return sha256_b64u(self.signing_bytes())
@@ -94,6 +104,13 @@ class ChainLink:
         if canonicalize(fields) != body:
             raise ValueError("body is not in canonical form")
         return cls(**fields, proof=proof)
+
+
+def _permissions(scope: Any) -> tuple[Permission, ...]:
+    try:
+        return permissions_of(scope)
+    except ValueError as err:
+        raise ValueError(f"scope: {err}") from None
 
 
 def _validate_link_fields(fields: dict[str, Any]) -> None:
@@ -117,9 +134,7 @@ def _validate_link_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
-    scope_refusal = validate_scope(fields["scope"])
-    if scope_refusal:
-        raise ValueError(f"scope: {scope_refusal}")
+    _permissions(fields["scope"])
     if not 1 <= fields["depth"] <= MAX_CHAIN_DEPTH:
         raise ValueError(f"depth must be between 1 and {MAX_CHAIN_DEPTH}")
     if fields["expires_at"] <= fields["issued_at"]:
@@ -142,7 +157,9 @@ def delegate(
     """Sign the next link, issued by the holder of `parent.subject`. Refuses, with
     ValueError, anything verify_chain would refuse: a key that is not the parent's
     subject, a scope that does not narrow, a budget above the parent's, a depth past
-    the root's max_depth, or no remaining lifetime. Expiry is clamped to the parent's."""
+    the root's max_depth, or no remaining lifetime. Expiry is clamped to the parent's.
+    The scope must be a permissions scope: a v1 scope is refused, and the link is
+    signed under LINK_VERSION 2."""
     if not isinstance(root, TaskRoot):
         raise TypeError("root must be a TaskRoot")
     if not isinstance(parent, (TaskRoot, ChainLink)):
@@ -162,7 +179,10 @@ def delegate(
     depth = 1 if isinstance(parent, TaskRoot) else parent.depth + 1
     if depth > root.max_depth:
         raise ValueError(f"depth {depth} exceeds the root's max_depth {root.max_depth}")
-    if not scope_narrows(parent.scope, scope):
+    permissions = _permissions(scope)
+    if scope_version(scope) != LINK_VERSION:
+        raise ValueError("scope: a v1 scope cannot be delegated, use permissions")
+    if not permissions_narrow(parent.permissions, permissions):
         raise ValueError("scope does not narrow the parent's scope")
     if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= parent.budget:
         raise ValueError(f"budget must be an integer between 0 and the parent's budget {parent.budget}")
@@ -266,7 +286,8 @@ def prove_leaf(
 class ChainVerifyResult:
     """Authentication result only. `valid=True` means the chain from the root to the
     leaf is authentic, narrowing, in its validity window, and the presenter holds the
-    leaf subject's key now. Interpreting `leaf_scope` is the caller's job."""
+    leaf subject's key now. Interpreting `leaf_scope` is the caller's job;
+    `leaf_permissions` is its validated, immutable view, for check_call."""
 
     valid: bool
     reason: str
@@ -285,6 +306,12 @@ class ChainVerifyResult:
         if not self.valid or self.root is None:
             return None
         return self.links[-1].scope if self.links else self.root.scope
+
+    @property
+    def leaf_permissions(self) -> tuple[Permission, ...] | None:
+        if not self.valid or self.root is None:
+            return None
+        return self.links[-1].permissions if self.links else self.root.permissions
 
 
 @dataclass(frozen=True)
@@ -321,12 +348,15 @@ def verify_chain(
     *,
     expected_audience: str,
     expected_request_digest: str,
+    scope_v1_cutoff: int,
     max_proof_age_seconds: int = DEFAULT_PROOF_MAX_AGE_SECONDS,
 ) -> ChainVerifyResult:
     """Never raises on attacker-controlled `root_encoded`, `links_encoded` or
     `leaf_proof`; every failure is a fail-closed result. Verifies the root with
-    verify_root, then each link in order, then a fresh possession proof by the leaf
-    subject. A TaskRoot alone, without the leaf key, never yields a valid chain."""
+    check_root, then each link in order, then a fresh possession proof by the leaf
+    subject. A TaskRoot alone, without the leaf key, never yields a valid chain.
+    `scope_v1_cutoff` is passed to check_root: a root with a v1 scope issued at or
+    after it is refused. It is required and has no default."""
 
     def fail(reason: str) -> ChainVerifyResult:
         return ChainVerifyResult(valid=False, reason=reason, checked_at=now if isinstance(now, int) else 0)
@@ -354,7 +384,7 @@ def verify_chain(
     if revocation_checker is None or not callable(getattr(revocation_checker, "is_revoked", None)):
         raise TypeError("verify_chain requires a ChainRevocationChecker")
 
-    root_result = check_root(root_encoded, resolver, trust_policy, now)
+    root_result = check_root(root_encoded, resolver, trust_policy, now, scope_v1_cutoff=scope_v1_cutoff)
     if not root_result.valid or root_result.root is None:
         return fail(f"task root: {root_result.reason}")
     root = root_result.root
@@ -443,7 +473,9 @@ def _check_link(
         decode_public_key(link.issuer).verify(b64u_decode(link.proof), link.signing_bytes())
     except (InvalidSignature, ValueError, binascii.Error):
         return "invalid signature"
-    if not scope_narrows(previous.scope, link.scope):
+    if previous.scope_version == 2 and link.scope_version == 1:
+        return "v1 scope under a v2 scope"
+    if not permissions_narrow(previous.permissions, link.permissions):
         return "scope does not narrow the previous scope"
     if link.budget > previous.budget:
         return "budget exceeds the previous budget"

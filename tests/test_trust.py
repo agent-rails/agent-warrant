@@ -50,7 +50,7 @@ def issue(key, **overrides):
         "max_depth": 3,
         "issued_at": NOW,
         "expires_at": NOW + 300,
-        "scope": {"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5},
+        "scope": {"permissions": [{"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5}]},
         "subject": encode_public_key(generate_keypair().public_key()),
     }
     fields.update(overrides)
@@ -60,7 +60,7 @@ def issue(key, **overrides):
 def run(key, policy, **overrides):
     resolver = PinnedResolver({"issuer-a": key.public_key(), "issuer-b": key.public_key()})
     root = issue(key, **overrides)
-    return verify_root(root.encode(), resolver, policy, NeverRevoked(), NOW)
+    return verify_root(root.encode(), resolver, policy, NeverRevoked(), NOW, scope_v1_cutoff=0)
 
 
 def test_claims_within_allowance_pass():
@@ -84,7 +84,7 @@ def test_unlisted_issuer_is_refused_before_key_lookup_and_revocation():
     resolver = CountingResolver({"issuer-a": key.public_key()})
     checker = NeverRevoked()
     encoded = issue(key).encode()
-    result = verify_root(encoded, resolver, IssuerTrustPolicy({}), checker, NOW)
+    result = verify_root(encoded, resolver, IssuerTrustPolicy({}), checker, NOW, scope_v1_cutoff=0)
     assert result.valid is False
     assert (resolver.calls, checker.calls) == (0, 0)
 
@@ -114,7 +114,7 @@ def test_claim_refusal_never_reaches_revocation_lookup():
     checker = NeverRevoked()
     resolver = PinnedResolver({"issuer-a": key.public_key()})
     policy = IssuerTrustPolicy({"issuer-a": allowance()})
-    verify_root(issue(key, budget=101).encode(), resolver, policy, checker, NOW)
+    verify_root(issue(key, budget=101).encode(), resolver, policy, checker, NOW, scope_v1_cutoff=0)
     assert checker.calls == 0
 
 
@@ -152,7 +152,7 @@ def test_verify_root_requires_a_policy():
     key = generate_keypair()
     resolver = PinnedResolver({"issuer-a": key.public_key()})
     with pytest.raises(TypeError, match="IssuerTrustPolicy"):
-        verify_root(issue(key).encode(), resolver, None, NeverRevoked(), NOW)
+        verify_root(issue(key).encode(), resolver, None, NeverRevoked(), NOW, scope_v1_cutoff=0)
 
 
 @pytest.mark.parametrize("name", ["principals", "principal_prefixes"])

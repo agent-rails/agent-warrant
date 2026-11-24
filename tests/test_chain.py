@@ -23,13 +23,27 @@ from agent_warrant.encoding import b64u, sha256_b64u
 from agent_warrant.exceptions import RevocationSourceUnreachable
 from agent_warrant.identity import encode_public_key, generate_keypair
 from agent_warrant.resolver import PinnedResolver
-from agent_warrant.task_root import issue_task_root
+from agent_warrant.scope import Permission
+from agent_warrant.task_root import TaskRoot, issue_task_root
 from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 NOW = 1_000_000
 AUDIENCE = "executor-1"
 REQUEST = sha256_b64u(b"request-1")
-SCOPE = {"tools": ["deploy.*", "read"], "resources": ["env/*"], "max_cost_per_call": 5}
+
+
+def permission_scope(tools, resources, cost):
+    return {"permissions": [{"tools": tools, "resources": resources, "max_cost_per_call": cost}]}
+
+
+SCOPE = permission_scope(["deploy.*", "read"], ["env/*"], 5)
+V1_SCOPE = {"tools": ["deploy.*", "read"], "resources": ["env/*"], "max_cost_per_call": 5}
+SPLIT_SCOPE = {
+    "permissions": [
+        {"tools": ["deploy.*"], "resources": ["env/staging"], "max_cost_per_call": 5},
+        {"tools": ["read"], "resources": ["env/prod"], "max_cost_per_call": 1},
+    ]
+}
 POLICY = IssuerTrustPolicy(
     {
         "issuer-a": IssuerAllowance(
@@ -45,9 +59,13 @@ def prove_leaf(leaf, holder_key, now, audience=AUDIENCE, request_digest=REQUEST)
     return raw_prove_leaf(leaf, holder_key, now, audience=audience, request_digest=request_digest)
 
 
-def verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, **kwargs):
+def verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, scope_v1_cutoff=0, **kwargs):
     return raw_verify_chain(
-        *args, expected_audience=expected_audience, expected_request_digest=expected_request_digest, **kwargs
+        *args,
+        expected_audience=expected_audience,
+        expected_request_digest=expected_request_digest,
+        scope_v1_cutoff=scope_v1_cutoff,
+        **kwargs,
     )
 
 
@@ -85,24 +103,28 @@ def pub(key):
 
 
 class World:
-    def __init__(self, max_depth=3, tenant="t1", task="task-1", budget=100, ttl=3600):
+    def __init__(self, max_depth=3, tenant="t1", task="task-1", budget=100, ttl=3600, scope=SCOPE):
         self.issuer_key = generate_keypair()
         self.resolver = PinnedResolver({"issuer-a": self.issuer_key.public_key()})
         self.keys = [generate_keypair() for _ in range(6)]
-        self.root = issue_task_root(
-            self.issuer_key,
-            issuer="issuer-a",
-            task_id=task,
-            tenant_id=tenant,
-            principal="alice",
-            purpose="deploy",
-            budget=budget,
-            max_depth=max_depth,
-            issued_at=NOW,
-            expires_at=NOW + ttl,
-            scope=SCOPE,
-            subject=pub(self.keys[0]),
-        )
+        fields = {
+            "issuer": "issuer-a",
+            "task_id": task,
+            "tenant_id": tenant,
+            "principal": "alice",
+            "purpose": "deploy",
+            "budget": budget,
+            "max_depth": max_depth,
+            "issued_at": NOW,
+            "expires_at": NOW + ttl,
+            "scope": scope,
+            "subject": pub(self.keys[0]),
+        }
+        if "permissions" in scope:
+            self.root = issue_task_root(self.issuer_key, **fields)
+        else:
+            signature = self.issuer_key.sign(signing_input("task-root", 1, fields))
+            self.root = TaskRoot(**fields, proof=b64u(signature))
 
     def link(self, parent, depth_index, **overrides):
         args = {
@@ -125,6 +147,7 @@ class World:
 
     def forge(self, signer, parent, subject_index=1, **overrides):
         tag = overrides.pop("_tag", "chain-link")
+        version = overrides.pop("_version", None)
         depth = 1 if parent is self.root else parent.depth + 1
         fields = {
             "task_id": self.root.task_id,
@@ -140,7 +163,9 @@ class World:
             "expires_at": parent.expires_at,
         }
         fields.update(overrides)
-        signature = signer.sign(signing_input(tag, 1, fields))
+        if version is None:
+            version = 2 if "permissions" in fields["scope"] else 1
+        signature = signer.sign(signing_input(tag, version, fields))
         return ChainLink(**fields, proof=b64u(signature))
 
     def verify(self, links, holder_key=None, leaf=None, now=NOW, checker=None, root=None, proof_iat=None, **kwargs):
@@ -180,12 +205,8 @@ def test_root_only_chain_needs_the_root_subject_key(world):
 
 
 def test_narrowing_scope_and_budget_along_the_chain(world):
-    first = world.link(
-        world.root, 0, scope={"tools": ["deploy.prod.*"], "resources": ["env/prod"], "max_cost_per_call": 3}, budget=50
-    )
-    second = world.link(
-        first, 1, scope={"tools": ["deploy.prod.eu"], "resources": ["env/prod"], "max_cost_per_call": 1}, budget=10
-    )
+    first = world.link(world.root, 0, scope=permission_scope(["deploy.prod.*"], ["env/prod"], 3), budget=50)
+    second = world.link(first, 1, scope=permission_scope(["deploy.prod.eu"], ["env/prod"], 1), budget=10)
     assert world.verify([first, second]).valid is True
 
 
@@ -215,14 +236,12 @@ def test_delegate_refuses_key_that_is_not_the_parents_subject(world):
 
 def test_delegate_refuses_wider_scope(world):
     with pytest.raises(ValueError, match="narrow"):
-        world.link(
-            world.root, 0, scope={"tools": ["deploy.*", "admin"], "resources": ["env/*"], "max_cost_per_call": 5}
-        )
+        world.link(world.root, 0, scope=permission_scope(["deploy.*", "admin"], ["env/*"], 5))
 
 
 def test_delegate_refuses_higher_cost(world):
     with pytest.raises(ValueError, match="narrow"):
-        world.link(world.root, 0, scope={**SCOPE, "max_cost_per_call": 6})
+        world.link(world.root, 0, scope=permission_scope(["deploy.*", "read"], ["env/*"], 6))
 
 
 def test_delegate_refuses_higher_budget(world):
@@ -495,13 +514,13 @@ def test_depth_zero_is_malformed(world):
 
 
 def test_widened_scope_fails(world):
-    forged = world.forge(world.keys[0], world.root, scope={**SCOPE, "tools": ["deploy.*", "admin"]})
+    forged = world.forge(world.keys[0], world.root, scope=permission_scope(["deploy.*", "admin"], ["env/*"], 5))
     result = world.verify([forged])
     assert (result.valid, result.reason) == (False, "link 1: scope does not narrow the previous scope")
 
 
 def test_widened_scope_at_second_hop_fails(world):
-    first = world.link(world.root, 0, scope={"tools": ["read"], "resources": ["env/*"], "max_cost_per_call": 5})
+    first = world.link(world.root, 0, scope=permission_scope(["read"], ["env/*"], 5))
     forged = world.forge(world.keys[1], first, scope=SCOPE)
     assert (
         world.verify([first, forged], holder_key=world.keys[2]).reason
@@ -826,6 +845,7 @@ def audience_verify(world, links, proof, audience=AUDIENCE, request=REQUEST, now
         now,
         expected_audience=audience,
         expected_request_digest=request,
+        scope_v1_cutoff=0,
         **kwargs,
     )
 
@@ -916,6 +936,22 @@ def test_verify_chain_requires_audience_and_request_arguments(world):
         )
 
 
+def test_verify_chain_requires_the_scope_v1_cutoff(world):
+    links = world.chain(1)
+    proof = prove_leaf(links[0], world.keys[1], NOW).encode()
+    args = (world.root.encode(), [links[0].encode()], proof, world.resolver, POLICY, NeverRevoked(), NOW)
+    with pytest.raises(TypeError):
+        chain_module.verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST)
+    with pytest.raises(TypeError):
+        chain_module.verify_chain(
+            *args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, scope_v1_cutoff=True
+        )
+    result = chain_module.verify_chain(
+        *args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, scope_v1_cutoff=0
+    )
+    assert result.valid is True
+
+
 class OddChainChecker:
     def __init__(self, outcome):
         self.outcome = outcome
@@ -981,3 +1017,166 @@ def test_delegate_refuses_a_non_root_first_argument(world):
 def test_prove_leaf_refuses_a_malformed_time(world, now):
     with pytest.raises(ValueError, match="now must be a non-negative integer"):
         prove_leaf(world.root, world.keys[0], now)
+
+
+def test_delegated_link_is_signed_under_the_v2_tag(world):
+    link = world.chain(1)[0]
+    assert chain_module.LINK_VERSION == 2
+    assert link.scope_version == 2
+    assert link.signing_bytes() == signing_input("chain-link", 2, link.signable_fields())
+    assert link.binding() == sha256_b64u(signing_input("chain-link", 2, link.signable_fields()))
+
+
+def test_links_carry_an_immutable_permissions_view(world):
+    link = world.chain(1)[0]
+    expected = (Permission(("deploy.*", "read"), ("env/*",), 5),)
+    assert link.permissions == expected
+    decoded = ChainLink.decode(link.encode())
+    assert (decoded.permissions, decoded.scope_version) == (expected, 2)
+    decoded.scope["permissions"][0]["tools"].append("admin")
+    decoded.scope["permissions"].append({"tools": ["x"], "resources": ["y"], "max_cost_per_call": 9})
+    assert decoded.permissions == expected
+
+
+def test_replacing_a_link_scope_recomputes_its_view(world):
+    link = world.chain(1)[0]
+    narrowed = dataclasses.replace(link, scope=permission_scope(["read"], ["env/*"], 1))
+    assert narrowed.permissions == (Permission(("read",), ("env/*",), 1),)
+    with pytest.raises(ValueError, match="scope: "):
+        dataclasses.replace(link, scope={"tools": [1.5]})
+
+
+def test_delegate_refuses_a_v1_scope(world):
+    with pytest.raises(ValueError, match="a v1 scope cannot be delegated"):
+        world.link(world.root, 0, scope=V1_SCOPE)
+
+
+def test_delegate_refuses_a_v1_scope_under_a_v1_root():
+    world = World(scope=V1_SCOPE)
+    with pytest.raises(ValueError, match="a v1 scope cannot be delegated"):
+        world.link(world.root, 0, scope=V1_SCOPE)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        permission_scope(["deploy.*"], ["env/prod"], 1),
+        permission_scope(["read"], ["env/staging"], 1),
+        permission_scope(["read"], ["env/prod"], 5),
+        permission_scope(["deploy.*", "read"], ["env/prod"], 1),
+    ],
+)
+def test_delegate_refuses_widening_across_permissions(scope):
+    world = World(scope=SPLIT_SCOPE)
+    with pytest.raises(ValueError, match="does not narrow"):
+        world.link(world.root, 0, scope=scope)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        permission_scope(["deploy.*"], ["env/prod"], 1),
+        permission_scope(["read"], ["env/staging"], 1),
+        permission_scope(["read"], ["env/prod"], 5),
+    ],
+)
+def test_widening_across_permissions_fails_at_verify(scope):
+    world = World(scope=SPLIT_SCOPE)
+    forged = world.forge(world.keys[0], world.root, scope=scope)
+    assert world.verify([forged]).reason == "link 1: scope does not narrow the previous scope"
+
+
+def test_split_permissions_delegate_and_verify():
+    world = World(scope=SPLIT_SCOPE)
+    child = {
+        "permissions": [
+            {"tools": ["deploy.web"], "resources": ["env/staging"], "max_cost_per_call": 2},
+            {"tools": ["read"], "resources": ["env/prod"], "max_cost_per_call": 1},
+        ]
+    }
+    link = world.link(world.root, 0, scope=child)
+    result = world.verify([link])
+    assert (result.valid, result.reason) == (True, "ok")
+    assert result.leaf_permissions == (
+        Permission(("deploy.web",), ("env/staging",), 2),
+        Permission(("read",), ("env/prod",), 1),
+    )
+
+
+def test_v1_link_under_the_v2_root_fails(world):
+    forged = world.forge(world.keys[0], world.root, scope=V1_SCOPE)
+    assert world.verify([forged]).reason == "link 1: v1 scope under a v2 scope"
+
+
+def test_v1_link_under_a_v2_link_fails(world):
+    first = world.link(world.root, 0)
+    forged = world.forge(world.keys[1], first, subject_index=2, scope=V1_SCOPE)
+    result = world.verify([first, forged], holder_key=world.keys[2])
+    assert result.reason == "link 2: v1 scope under a v2 scope"
+
+
+def test_v1_chain_verifies_only_before_the_cutoff():
+    world = World(scope=V1_SCOPE)
+    link = world.forge(world.keys[0], world.root, scope=V1_SCOPE)
+    assert world.verify([link], scope_v1_cutoff=NOW + 1).valid is True
+    assert world.verify([link], scope_v1_cutoff=NOW).reason == "task root: scope_v1_expired"
+
+
+def test_v2_link_under_a_v1_root_verifies_before_the_cutoff():
+    world = World(scope=V1_SCOPE)
+    link = world.link(world.root, 0, scope=permission_scope(["read"], ["env/*"], 1))
+    assert link.scope_version == 2
+    result = world.verify([link], scope_v1_cutoff=NOW + 1)
+    assert (result.valid, result.reason) == (True, "ok")
+
+
+@pytest.mark.parametrize(
+    ("scope", "version"),
+    [(permission_scope(["read"], ["env/*"], 1), 1), (V1_SCOPE, 2)],
+)
+def test_link_signed_under_the_other_versions_tag_fails(scope, version):
+    world = World(scope=V1_SCOPE)
+    forged = world.forge(world.keys[0], world.root, scope=scope, _version=version)
+    assert world.verify([forged], scope_v1_cutoff=NOW + 1).reason == "link 1: invalid signature"
+
+
+def test_leaf_permissions_follow_the_leaf(world):
+    links = world.chain(2)
+    assert world.verify(links).leaf_permissions == links[-1].permissions
+    assert world.verify([]).leaf_permissions == world.root.permissions
+    assert world.verify(links, holder_key=generate_keypair()).leaf_permissions is None
+
+
+def link_identity(record):
+    return record.binding(), record.signing_bytes(), record.encode(), record.permissions, record.scope_version
+
+
+def test_mutating_a_decoded_link_scope_leaves_its_identity_unchanged(world):
+    link = ChainLink.decode(world.chain(1)[0].encode())
+    original = link.scope
+    before = link_identity(link)
+    link.scope["permissions"][0]["tools"].append("admin")
+    link.scope["permissions"].append({"tools": ["x"], "resources": ["y"], "max_cost_per_call": 9})
+    assert link_identity(link) == before
+    assert link.scope == original
+
+
+def test_a_delegated_link_is_detached_from_the_callers_scope(world):
+    scope = permission_scope(["read"], ["env/*"], 1)
+    link = world.link(world.root, 0, scope=scope)
+    before = link_identity(link)
+    scope["permissions"][0]["resources"].append("payroll")
+    assert link_identity(link) == before
+    assert link.scope == permission_scope(["read"], ["env/*"], 1)
+
+
+def test_mutating_the_verified_leaf_scope_changes_nothing(world):
+    links = world.chain(2)
+    result = world.verify(links)
+    assert result.valid is True
+    permissions = result.leaf_permissions
+    binding = result.links[-1].binding()
+    result.leaf_scope["permissions"][0]["resources"].append("payroll")
+    assert result.leaf_permissions == permissions
+    assert result.links[-1].binding() == binding
+    assert result.leaf_scope == links[-1].scope

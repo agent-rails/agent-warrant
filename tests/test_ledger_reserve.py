@@ -548,7 +548,7 @@ def test_link_expiry_must_be_an_integer_in_range(ledger, world, expires_at):
 
 
 def test_a_link_that_cannot_be_hashed_is_refused(ledger, world):
-    link = dataclasses.replace(world.chain(1)[0], scope={"tools": [1.5]})
+    link = dataclasses.replace(world.chain(1)[0], parent_hash=1.5)
     with pytest.raises(Refused, match="malformed link"):
         ledger.reserve(operation(world), [link], NOW)
 

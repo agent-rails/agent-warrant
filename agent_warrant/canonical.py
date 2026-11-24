@@ -222,3 +222,22 @@ def _check_value(value: Any, depth: int, limit: int) -> None:
             _check_value(inner, depth + 1, limit)
         return
     raise ValueError(f"{type(value).__name__} is not an allowed value type")
+
+
+class CanonicalCopy:
+    """Dataclass field descriptor for a signed JSON value. Assignment stores the value's
+    canonical bytes; every read returns a fresh decoded copy. A record's signed value then
+    cannot change after construction through the caller's reference or through a value
+    read from the record, so its signed bytes, binding and derived views stay fixed."""
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = name
+        self._slot = f"_{name}_canonical"
+
+    def __get__(self, record: Any, owner: type | None = None) -> Any:
+        if record is None:
+            raise AttributeError(self._name)
+        return json.loads(record.__dict__[self._slot])
+
+    def __set__(self, record: Any, value: Any) -> None:
+        record.__dict__[self._slot] = canonicalize(value)

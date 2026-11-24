@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import binascii
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
+from .canonical import MAX_SAFE_INTEGER, CanonicalCopy, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
 from .identity import is_valid_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
-from .scope import validate_scope
+from .scope import Permission, permissions_of, scope_version
 from .trust import IssuerTrustPolicy
 
 RECORD_TYPE = "task-root"
-RECORD_VERSION = 1
+RECORD_VERSION = 2
 MAX_ENCODED_TASK_ROOT_BYTES = 16_384
 MAX_FIELD_CHARACTERS = 256
 MAX_CHAIN_DEPTH = 16
@@ -36,10 +36,14 @@ class TaskRoot:
     """The signed root of a delegation: who is allowed to start a task, for which
     tenant and principal, with what scope, budget and delegation depth. `subject` is the
     first delegate's public key; `proof` is the ISSUER's signature over
-    signing_input("task-root", 1, body). Verifying a TaskRoot proves the issuer
-    signed these claims, not that any presenter holds `subject`'s key, and not that
-    the issuer may assert them (see trust.py). Strings are compared byte for byte:
-    callers must normalise ids before they enter a record."""
+    signing_input("task-root", version, body), where version is the scope's version: 2
+    for a permissions scope, 1 for a v1 scope, so a body cannot be verified under the
+    other version's tag. `permissions` and `scope_version` are an immutable view of
+    `scope` computed at construction. `scope` is held as canonical bytes and each read
+    returns a fresh copy, so mutating a value read from it changes nothing. Verifying a
+    TaskRoot proves the issuer signed these claims, not that any presenter holds
+    `subject`'s key, and not that the issuer may assert them (see trust.py). Strings
+    are compared byte for byte: callers must normalise ids before they enter a record."""
 
     task_id: str
     tenant_id: str
@@ -49,16 +53,22 @@ class TaskRoot:
     max_depth: int
     issued_at: int
     expires_at: int
-    scope: dict[str, Any]
+    scope: dict[str, Any] = CanonicalCopy()  # type: ignore[assignment]
     subject: str
     issuer: str
     proof: str
+    permissions: tuple[Permission, ...] = field(init=False, repr=False, compare=False)
+    scope_version: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "permissions", _permissions(self.scope))
+        object.__setattr__(self, "scope_version", scope_version(self.scope))
 
     def signable_fields(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in _BODY_FIELDS}
 
     def signing_bytes(self) -> bytes:
-        return signing_input(RECORD_TYPE, RECORD_VERSION, self.signable_fields())
+        return signing_input(RECORD_TYPE, self.scope_version, self.signable_fields())
 
     def binding(self) -> str:
         """Stable identity of this root: sha256 of its domain-tagged signing bytes."""
@@ -80,6 +90,20 @@ class TaskRoot:
         return cls(**fields, proof=proof)
 
 
+def _permissions(scope: Any) -> tuple[Permission, ...]:
+    try:
+        return permissions_of(scope)
+    except ValueError as err:
+        raise ValueError(f"scope: {err}") from None
+
+
+def _check_cutoff(scope_v1_cutoff: Any) -> None:
+    if isinstance(scope_v1_cutoff, bool) or not isinstance(scope_v1_cutoff, int):
+        raise TypeError("scope_v1_cutoff must be an integer")
+    if scope_v1_cutoff < 0:
+        raise ValueError("scope_v1_cutoff must not be negative")
+
+
 def _validate_fields(fields: dict[str, Any]) -> None:
     for name in _ID_FIELDS:
         value = fields[name]
@@ -95,9 +119,7 @@ def _validate_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
-    scope_refusal = validate_scope(fields["scope"])
-    if scope_refusal:
-        raise ValueError(f"scope: {scope_refusal}")
+    _permissions(fields["scope"])
     if fields["max_depth"] > MAX_CHAIN_DEPTH:
         raise ValueError(f"max_depth must not exceed {MAX_CHAIN_DEPTH}")
     if fields["expires_at"] <= fields["issued_at"]:
@@ -137,6 +159,8 @@ def issue_task_root(
         "issuer": issuer,
     }
     _validate_fields(fields)
+    if scope_version(scope) != RECORD_VERSION:
+        raise ValueError("scope: a v1 scope cannot be issued, use permissions")
     signature = issuer_key.sign(signing_input(RECORD_TYPE, RECORD_VERSION, fields))
     return TaskRoot(**fields, proof=b64u(signature))
 
@@ -158,12 +182,16 @@ def check_root(
     resolver: IssuerResolver,
     trust_policy: IssuerTrustPolicy,
     now: int,
+    *,
+    scope_v1_cutoff: int,
 ) -> TaskRootResult:
     """verify_root without the revocation lookup: decode, trust policy, issuer
-    signature, validity window and issuer allowance. For callers that run their own
-    revocation check (verify_chain). `valid=True` here does NOT mean unrevoked."""
+    signature, validity window, issuer allowance and the v1 cutoff. For callers that
+    run their own revocation check (verify_chain). `valid=True` here does NOT mean
+    unrevoked."""
     if not isinstance(trust_policy, IssuerTrustPolicy):
         raise TypeError("verify_root requires an IssuerTrustPolicy")
+    _check_cutoff(scope_v1_cutoff)
     if isinstance(now, bool) or not isinstance(now, int):
         return TaskRootResult(valid=False, reason="now must be an integer", checked_at=0)
 
@@ -195,6 +223,9 @@ def check_root(
     if refusal:
         return TaskRootResult(valid=False, reason=refusal, checked_at=now)
 
+    if root.scope_version == 1 and root.issued_at >= scope_v1_cutoff:
+        return TaskRootResult(valid=False, reason="scope_v1_expired", checked_at=now)
+
     return TaskRootResult(valid=True, reason="ok", root=root, checked_at=now)
 
 
@@ -204,12 +235,17 @@ def verify_root(
     trust_policy: IssuerTrustPolicy,
     revocation_checker: RevocationChecker,
     now: int,
+    *,
+    scope_v1_cutoff: int,
 ) -> TaskRootResult:
     """Never raises on attacker-controlled `encoded`; every failure is a
     fail-closed result. No possession proof is checked. The trust policy is
     mandatory: an issuer it does not list is refused before any key lookup, and
-    claims beyond the issuer's allowance are refused after its signature checks."""
-    checked = check_root(encoded, resolver, trust_policy, now)
+    claims beyond the issuer's allowance are refused after its signature checks.
+    A root with a v1 scope is refused with "scope_v1_expired" unless its issued_at
+    is before `scope_v1_cutoff` (Unix seconds); 0 refuses every v1 root. The cutoff
+    is required and has no default."""
+    checked = check_root(encoded, resolver, trust_policy, now, scope_v1_cutoff=scope_v1_cutoff)
     if not checked.valid or checked.root is None:
         return checked
     root = checked.root

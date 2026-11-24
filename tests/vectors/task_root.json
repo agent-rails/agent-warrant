@@ -1,5 +1,5 @@
 {
-  "description": "Task-root vectors. issuers maps issuer id to its Ed25519 public key (base64url); verify_root must be called with a resolver pinned to these keys, the trust policy below, a revocation checker that reports the root as revoked only when revoked is true, and now. expect_valid and reason (substring) are the required outcome. Keys are derived from fixed seeds so signatures are reproducible. Signed bytes are signing_input('task-root', 1, body); the transport form is base64url(canonical body) + '.' + base64url(signature).",
+  "description": "Task-root vectors. issuers maps issuer id to its Ed25519 public key (base64url); verify_root must be called with a resolver pinned to these keys, the trust policy below, a revocation checker that reports the root as revoked only when revoked is true, now, and scope_v1_cutoff. expect_valid and reason (substring) are the required outcome. Keys are derived from fixed seeds so signatures are reproducible. Signed bytes are signing_input('task-root', version, body), where version is the scope's version: 1 for a {tools, resources, max_cost_per_call} scope, 2 for a {permissions} scope; a root with a v1 scope is refused with scope_v1_expired when issued_at >= scope_v1_cutoff; v2_bindings pins the binding of each valid v2 vector by name; reordering permissions or the entries of a list is a different signed body and so a different binding; v2_root_fields is the body of v2-valid; v2_bindings pins the binding of each valid v2 vector by name; reordering permissions or the entries of a list is a different signed body and so a different binding; v2_root_fields is the body of v2-valid; the transport form is base64url(canonical body) + '.' + base64url(signature).",
   "issuers": {
     "issuer-a": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
     "issuer-b": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E"
@@ -46,11 +46,55 @@
     "subject": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"
   },
   "binding": "vzI0T6YVw5MZgWOIudM4j-jPoPoL8NPYipya4VaMXi8",
+  "v2_root_fields": {
+    "issuer": "issuer-a",
+    "task_id": "task-1",
+    "tenant_id": "tenant-1",
+    "principal": "svc:deployer",
+    "purpose": "deploy",
+    "budget": 100,
+    "max_depth": 3,
+    "issued_at": 1000000,
+    "expires_at": 1000300,
+    "scope": {
+      "permissions": [
+        {
+          "tools": [
+            "deploy.*"
+          ],
+          "resources": [
+            "env/*"
+          ],
+          "max_cost_per_call": 5
+        },
+        {
+          "tools": [
+            "read"
+          ],
+          "resources": [
+            "logs/*"
+          ],
+          "max_cost_per_call": 1
+        }
+      ]
+    },
+    "subject": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q"
+  },
+  "v2_bindings": {
+    "v2-valid": "q2QYCFdKmZVCXHPPv_a_hYidTKxj3ZyilfniBac2WcM",
+    "v2-reordered-permissions": "d8-uOPybc_Su7cuLQSjSPn1FjcgU4eVYYthJ8vmjXbo",
+    "v2-entries-in-one-order": "HwvIhmWXb7aSbxU8I58RqJUGTVmcRC5W5HSKZQ6UZ4Y",
+    "v2-entries-in-another-order": "mxYmSRs81z2ZKGuaeTUH67br2m_ZtNIQTCJYRkjLo0o",
+    "v2-single-permission-single-entries": "Xt_fnGnD4rv1ZeDAkyho_-S-VNrOl0eQYIcxlb1BQa4",
+    "v2-same-entry-in-two-permissions": "F8i0XjolvX1lBBZJ-QFq5FIVuouL389dys6mrrB989I",
+    "v2-sixteen-permissions": "vR3ALv2ONFW4930eXkdzD-l8McePCUnrZGac2B_10j0"
+  },
   "vectors": [
     {
       "name": "valid",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": true,
       "reason": "ok"
@@ -59,6 +103,7 @@
       "name": "valid-at-skew-boundary",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 999995,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": true,
       "reason": "ok"
@@ -67,6 +112,7 @@
       "name": "expired",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000300,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "task root has expired"
@@ -75,6 +121,7 @@
       "name": "not-yet-valid",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 999994,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "task root is not yet valid"
@@ -83,6 +130,7 @@
       "name": "revoked",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": true,
       "expect_valid": false,
       "reason": "task root has been revoked"
@@ -91,6 +139,7 @@
       "name": "bad-signature",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.a5cgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "invalid issuer signature"
@@ -99,6 +148,7 @@
       "name": "tampered-body",
       "encoded": "eyJidWRnZXQiOjk5LCJleHBpcmVzX2F0IjoxMDAwMzAwLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImlzc3VlciI6Imlzc3Vlci1hIiwibWF4X2RlcHRoIjozLCJwcmluY2lwYWwiOiJzdmM6ZGVwbG95ZXIiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "invalid issuer signature"
@@ -107,6 +157,7 @@
       "name": "unlisted-issuer",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYiIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.xbrMuox5PooCPeUcD51BX_qs6Y9lWuKv9y5W87-oFGoQdZAJ7-KZ_A4xfOcvIIf2s-KB2I0b1DGE5P4j-se6Cw",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "not in the trust policy"
@@ -115,6 +166,7 @@
       "name": "tenant-beyond-allowance",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0yIn0.JeegmGU176RYvROYzVkWCA4P6_HZhT8gjupYssZtT-RtZ6Ph1YZQ5J_XRiozNsKD1bcjmxlb-L-fHmuNaLkyCQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "may not assert tenant"
@@ -123,6 +175,7 @@
       "name": "principal-beyond-allowance",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.muQhr3aMwHsi65caRHR20DIzYFTk6Y-0nb90i0zke_YMqflyEHLTSj4r8iiijIPwekarcOOtm21ba_q2YfmwDQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "may not assert principal"
@@ -131,6 +184,7 @@
       "name": "budget-beyond-allowance",
       "encoded": "eyJidWRnZXQiOjEwMSwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.OfLOfXSFvC8QpSQtaNxNcrmFAiGXpYn4crlJycr6DVwynB1LpLnHOTraZjiti1s1dSB61j_nzmaO3LrhaQXVAw",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "exceeds issuer allowance 100"
@@ -139,6 +193,7 @@
       "name": "depth-beyond-allowance",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6NCwicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.iufG2PuAYLPGLjBuzDYxf-KTBNJhC6_hXEnYKLmdr2ufFlbqKbCh9W2eCUc7V12sne2NwDbrVQjWqytW2m_bBg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "exceeds issuer allowance 3"
@@ -147,6 +202,7 @@
       "name": "chain-link-domain-tag",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.mzHahrklP1QaiTGgmmwjGu9ySMQTK00YZnbuPKnnqBIw8bMOBetuR_a9MMTDlswuboVN8SaRcN5_cbAjYquJBg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "invalid issuer signature"
@@ -155,6 +211,7 @@
       "name": "task-root-version-2-tag",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.gJOdzenF7Z8uXWinbT1WJPFActr545_A8u9fbkEw4h0bEV32YetwdzCgOXa-Z4dVNg1Vc-BMXDy75_eEvejEBg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "invalid issuer signature"
@@ -163,6 +220,7 @@
       "name": "untagged-signature",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.ILw6IHUFond5Xk4EdI6vW66t3PrjaHLuLNXkqAPMwHX2dOUnc1oL6YEHL8xOM9aF5BiivZFWhN7J_8FHxuPDDw",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "invalid issuer signature"
@@ -171,6 +229,7 @@
       "name": "unknown-key",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiZXh0cmEiOjEsImlzc3VlZF9hdCI6MTAwMDAwMCwiaXNzdWVyIjoiaXNzdWVyLWEiLCJtYXhfZGVwdGgiOjMsInByaW5jaXBhbCI6InN2YzpkZXBsb3llciIsInB1cnBvc2UiOiJkZXBsb3kiLCJzY29wZSI6eyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbImRlcGxveS4qIl19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.DV13kQXJQpEbrQ_Df4fxSNCH893odZ_Fk6aJDPyfO18VAYn7shTriKC6oNjPXOo_NwUre5gpEaDmR84uB-fLAA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "unknown keys: extra"
@@ -179,6 +238,7 @@
       "name": "duplicate-key",
       "encoded": "eyJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAidGFza19pZCI6ICJ0YXNrLTEiLCAidGVuYW50X2lkIjogInRlbmFudC0xIiwgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAiYnVkZ2V0IjogMTAwLCAibWF4X2RlcHRoIjogMywgImlzc3VlZF9hdCI6IDEwMDAwMDAsICJleHBpcmVzX2F0IjogMTAwMDMwMCwgInNjb3BlIjogeyJ0b29scyI6IFsiZGVwbG95LioiXSwgInJlc291cmNlcyI6IFsiZW52LyoiXSwgIm1heF9jb3N0X3Blcl9jYWxsIjogNX0sICJzdWJqZWN0IjogImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCAidGFza19pZCI6ICJ0YXNrLTIifQ.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "duplicate key"
@@ -187,6 +247,7 @@
       "name": "float-timestamp",
       "encoded": "eyJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAidGFza19pZCI6ICJ0YXNrLTEiLCAidGVuYW50X2lkIjogInRlbmFudC0xIiwgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAiYnVkZ2V0IjogMTAwLCAibWF4X2RlcHRoIjogMywgImlzc3VlZF9hdCI6IDEwMDAwMDAuMCwgImV4cGlyZXNfYXQiOiAxMDAwMzAwLCAic2NvcGUiOiB7InRvb2xzIjogWyJkZXBsb3kuKiJdLCAicmVzb3VyY2VzIjogWyJlbnYvKiJdLCAibWF4X2Nvc3RfcGVyX2NhbGwiOiA1fSwgInN1YmplY3QiOiAiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USJ9.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "floats are not allowed"
@@ -195,6 +256,7 @@
       "name": "string-timestamp",
       "encoded": "eyJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAidGFza19pZCI6ICJ0YXNrLTEiLCAidGVuYW50X2lkIjogInRlbmFudC0xIiwgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAiYnVkZ2V0IjogMTAwLCAibWF4X2RlcHRoIjogMywgImlzc3VlZF9hdCI6ICIxMDAwMDAwIiwgImV4cGlyZXNfYXQiOiAxMDAwMzAwLCAic2NvcGUiOiB7InRvb2xzIjogWyJkZXBsb3kuKiJdLCAicmVzb3VyY2VzIjogWyJlbnYvKiJdLCAibWF4X2Nvc3RfcGVyX2NhbGwiOiA1fSwgInN1YmplY3QiOiAiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USJ9.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "issued_at must be an integer"
@@ -203,6 +265,7 @@
       "name": "scope-bare-wildcard",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOltdLCJ0b29scyI6WyIqIl19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.ryFXuae1GqIFxcq-qTp8gZPqNdl-acSmYuDpYCQYMJO5uKy3sdezQLsBqdaUP6IzZ5y8zqs7U_rmFNfJ8NQ7BQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "scope: tools"
@@ -211,6 +274,7 @@
       "name": "scope-prefix-without-separator",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOltdLCJ0b29scyI6WyJkZXBsb3kqIl19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.RG8I_oeIzNQYY47dyDNraqsyeYUMeHPjlUReArCXc7wE4I9QzKaV8ezjj5rD2RSxqLTMIa71jGvcwTiaZv3QDA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "scope: tools"
@@ -219,6 +283,7 @@
       "name": "scope-tampered",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiLCJhZG1pbi4qIl19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "invalid issuer signature"
@@ -227,6 +292,7 @@
       "name": "negative-budget",
       "encoded": "eyJidWRnZXQiOi0xLCJleHBpcmVzX2F0IjoxMDAwMzAwLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImlzc3VlciI6Imlzc3Vlci1hIiwibWF4X2RlcHRoIjozLCJwcmluY2lwYWwiOiJzdmM6ZGVwbG95ZXIiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.5YriYOkZhEiEEu1gO5OufkV7Ikw8Dj_UK2aKsf60RZO1MnaoK0AypGNUNoIllKDQYkq4vp1HqrLpjpzbRv1SDg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "budget must be between"
@@ -235,6 +301,7 @@
       "name": "expires-before-issued",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDAwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.mBFKbUliFNmi3wcraNCSXWRHA4-vkhIAJQOXYkAxK-LpDD8buxEkxQjbGqf_C8joGl6iJWXX7CtBEgY_4sDGAQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "expires_at must be after issued_at"
@@ -243,6 +310,7 @@
       "name": "lifetime-over-cap",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTA4NjQwMSwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.cakrXoB5jXydB9J_1XA2woQ6zi8762WXMdYIAapVVYEPdneB6_QVuZxN7G6uVzI_6GBjnnO4h6joTKlKbnvuAQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "lifetime must not exceed"
@@ -251,6 +319,7 @@
       "name": "subject-identity-point",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJBUUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.ZzvGtjH5zkP-aC_8kGd21HBLUMffl2dXspd6aM871HCZc65-rOTAcFVIFoURZ0AgrMN-asn6zJjMF1vCkar_Cg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -259,6 +328,7 @@
       "name": "subject-order-2-point",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiI3UF9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.6cQNtYBQFHoarvIYYdxzra9s9XhTcoj6JW0w3Ll-7lI5b4FTCx8glPjqh7LFxuBo0jt-EGAZDil3XHbHnA9PBA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -267,6 +337,7 @@
       "name": "subject-order-4-point",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.hoAQPD5yXcaqErBm9DkWvBuezSRorPx8yT99IIfv-EpQZvYSTSlWKX0k91wtBFLD55aEWpjJQvCbyGy3pYrxAA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -275,6 +346,7 @@
       "name": "subject-order-4-point-sign-bit",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUlBIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.0y0vBwNleqzLN7jw8FEEQUBKaRMckTymFnsoPR_8xonNsR0vKRpc46SWBxBPDRpc6r7jlapEeAPwecN5-dmYBA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -283,6 +355,7 @@
       "name": "subject-order-8-point",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJKdWlWajhLeUo3QkZ3X1NKOHUtWThOWGZyQVhUeGpNNXNUZ0NpRzFUX0FVIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.5Dtyqiqhd5GtyPjtmuYWHvbemGIzaIgbfUW97fWqAtQW4SY5lGw6SSC7CHNSP9BOHmcysP7rLxT1MhZg8gfcCg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -291,6 +364,7 @@
       "name": "subject-order-8-point-sign-flipped",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJKdWlWajhLeUo3QkZ3X1NKOHUtWThOWGZyQVhUeGpNNXNUZ0NpRzFUX0lVIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.-d8dtblquuyRyms3ORosO681YWhze71rrQDgY_nzT3y7lZwD5vGXBonXTLGQEMv8cziN-R3G1BpSya_BmlWrBA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -299,6 +373,7 @@
       "name": "subject-y-equals-p-plus-1",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiI3dl9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.rlPjWVZ6nh1DxosDsP2XEY0RVFG7XYWqBEsJZFMvIPGRWkLbrjwB_OG8Poq1u-2D9kmg_ltIVo1FVGoiKb4wAg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -307,6 +382,7 @@
       "name": "subject-y-equals-p",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiI3Zl9fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fX19fXzM4IiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.9xaZOpRL0w-c5J-KjHSo7hQcmLw0kGBrSDlW33Ld4CHSjGTlUSR0xO0SmcqA8AhroOyPh_MgUtDtFLq51i3qCA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "subject is not a canonical"
@@ -315,6 +391,7 @@
       "name": "tenant-bound-principal-valid",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTMifQ.rd4HJN-DTcRBrXFvRgzAw-WC9Hr72oXTYoBTZWtoHbuWULy_LeuSXACSjWX4pCqiHw_Uq9Bj94Tei-lagoytAQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": true,
       "reason": "ok"
@@ -323,6 +400,7 @@
       "name": "principal-of-another-tenant",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0zIn0.LIrLnyWyYV9r4_uyBwXz3exwuJ41kytjcHzI1VdHJQai1KWnLMAeD208oXLHZvn-25kJka5oNOwKtAyVkP86CA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "may not assert principal 'svc:deployer' for tenant 'tenant-3'"
@@ -331,6 +409,7 @@
       "name": "principal-prefix-of-another-tenant",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoiYWxpY2UiLCJwdXJwb3NlIjoiZGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.muQhr3aMwHsi65caRHR20DIzYFTk6Y-0nb90i0zke_YMqflyEHLTSj4r8iiijIPwekarcOOtm21ba_q2YfmwDQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "may not assert principal 'alice' for tenant 'tenant-1'"
@@ -339,6 +418,7 @@
       "name": "prefix-sibling-segment",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjLWFkbWluIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.MNZQ41NWWA9sbVjlkKQlopaRx4H4L9W24m_V9oO_GHn9im6qMQdJTDK03v-hDM4Glu-5VrV461a95t71IfEnAQ",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "may not assert principal 'svc-admin'"
@@ -347,6 +427,7 @@
       "name": "principal-nul-character",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOnRlYW1cdTAwMDB4IiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.b3QfepILStVrQXTkFWQK51JQYSbIPnuzSt4yZZbU5J1TtRIqEj0Gl0vc5U2aEp3hj_X1-x5b1QjATSodwempDA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "principal must be ASCII printable"
@@ -355,6 +436,7 @@
       "name": "principal-bidi-override",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOnRlYW3igK54IiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.HVSGG1NQ4rNIvioHLo5jGS4m7qjPtfstIKfxAJotkm81HEydT6wlf0ak4nvZKzilfgh3qauIwU7yf7gc3htuCA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "principal must be ASCII printable"
@@ -363,6 +445,7 @@
       "name": "principal-with-space",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOiB4IiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.bkBjF7v_rpmiQdmlFG8q8rO3wjRO16Tt0tBVbV3Akd3uOIKX3ZzpNLhouxW_AUN032ljK33Kew_obvbn8ZDHCg",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "principal must be ASCII printable"
@@ -371,6 +454,7 @@
       "name": "principal-non-ascii",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmNhZsOpIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.VAsgM61QLT2N06PEzvs93TKo2E8lwANY-IYCJrP5823L4QwbIKMKmZqU8itcIL5jPMZoq_1sM0HuvFSCTaQLCA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "principal must be ASCII printable"
@@ -379,6 +463,7 @@
       "name": "non-canonical-key-order",
       "encoded": "eyJpc3N1ZXIiOiJpc3N1ZXItYSIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSIsInByaW5jaXBhbCI6InN2YzpkZXBsb3llciIsInB1cnBvc2UiOiJkZXBsb3kiLCJidWRnZXQiOjEwMCwibWF4X2RlcHRoIjozLCJpc3N1ZWRfYXQiOjEwMDAwMDAsImV4cGlyZXNfYXQiOjEwMDAzMDAsInNjb3BlIjp7InRvb2xzIjpbImRlcGxveS4qIl0sInJlc291cmNlcyI6WyJlbnYvKiJdLCJtYXhfY29zdF9wZXJfY2FsbCI6NX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "body is not in canonical form"
@@ -387,6 +472,7 @@
       "name": "non-canonical-whitespace",
       "encoded": "eyJidWRnZXQiOiAxMDAsICJleHBpcmVzX2F0IjogMTAwMDMwMCwgImlzc3VlZF9hdCI6IDEwMDAwMDAsICJpc3N1ZXIiOiAiaXNzdWVyLWEiLCAibWF4X2RlcHRoIjogMywgInByaW5jaXBhbCI6ICJzdmM6ZGVwbG95ZXIiLCAicHVycG9zZSI6ICJkZXBsb3kiLCAic2NvcGUiOiB7Im1heF9jb3N0X3Blcl9jYWxsIjogNSwgInJlc291cmNlcyI6IFsiZW52LyoiXSwgInRvb2xzIjogWyJkZXBsb3kuKiJdfSwgInN1YmplY3QiOiAiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsICJ0YXNrX2lkIjogInRhc2stMSIsICJ0ZW5hbnRfaWQiOiAidGVuYW50LTEifQ.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "body is not in canonical form"
@@ -395,9 +481,190 @@
       "name": "non-canonical-escape",
       "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6Ilx1MDA2NGVwbG95Iiwic2NvcGUiOnsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
       "now": 1000000,
+      "scope_v1_cutoff": 1000001,
       "revoked": false,
       "expect_valid": false,
       "reason": "body is not in canonical form"
+    },
+    {
+      "name": "scope-v1-cutoff-at-issued-at",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000000,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "scope_v1_expired"
+    },
+    {
+      "name": "scope-v1-cutoff-zero",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
+      "now": 1000000,
+      "scope_v1_cutoff": 0,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "scope_v1_expired"
+    },
+    {
+      "name": "scope-v1-cutoff-after-issued-at",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.apcgenOv-qwCpMI5Q1RBuusrkFK-SUXrGW-x6OM0dZ1k3r_HxmlhI66HqSTIRHH4uA5d29WVk1-4FGpjY9M8BA",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-valid",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbImRlcGxveS4qIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJsb2dzLyoiXSwidG9vbHMiOlsicmVhZCJdfV19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.2e3GupNSutet6DunVkGGO7MJnuMsIRTSIVHYazU6THZ1ScqeNgTCiYkpxVGWCfnJAReGn4XPApgQ78K5lPj5DA",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-valid-cutoff-zero",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbImRlcGxveS4qIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJsb2dzLyoiXSwidG9vbHMiOlsicmVhZCJdfV19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.2e3GupNSutet6DunVkGGO7MJnuMsIRTSIVHYazU6THZ1ScqeNgTCiYkpxVGWCfnJAReGn4XPApgQ78K5lPj5DA",
+      "now": 1000000,
+      "scope_v1_cutoff": 0,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-reordered-permissions",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbImxvZ3MvKiJdLCJ0b29scyI6WyJyZWFkIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfV19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.W0skgQSyAGigubxcVp0s5fVhJ__aaHmfs953MbLLT0z0MQrYbecNHfuj5aKYhD-gnzMkTcQ8BM0lgYFnfmlRDg",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-entries-in-one-order",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImVudi8qIiwibG9ncy8qIl0sInRvb2xzIjpbImRlcGxveS4qIiwicmVhZCJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsibG9ncy8qIl0sInRvb2xzIjpbInJlYWQiXX1dfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.X8ctJPdkXGzTAuIOTvkl9Wfz7AnsNQwCtd_lq3SxlpCbdVy4lUQ5gsjY94WwuUB69G68Dz8gp_VD82cHPKX2AQ",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-entries-in-another-order",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImxvZ3MvKiIsImVudi8qIl0sInRvb2xzIjpbInJlYWQiLCJkZXBsb3kuKiJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsibG9ncy8qIl0sInRvb2xzIjpbInJlYWQiXX1dfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.SSAG2aQxv8dQ7OLkEtVTbHNxeedFYpj80jcaStGn01VD-P3TblXcWADQskrKAl8saYlRcpfyIYYpb9XPQQjzCg",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-single-permission-single-entries",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MCwicmVzb3VyY2VzIjpbImxvZ3MvYXBwIl0sInRvb2xzIjpbInJlYWQiXX1dfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.tVCkubU7EvptpuXZr1WYk4LN2WXY_skQSXv5uHnZqG4x9pZfse9dSBTP14zOO_ABZ69AJF-HRBByXIfiOWT0Bg",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-same-entry-in-two-permissions",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MiwicmVzb3VyY2VzIjpbImxvZ3MvKiJdLCJ0b29scyI6WyJyZWFkIl19XX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.v9kkfAdbBz6Nbxxiuhyh3W6dmMMYlYHFne38yOc6Jko7hfpe-YivJ5bumXt0_78ZNEcs5GjgIGwHksOmtUEsDQ",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-sixteen-permissions",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIwIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIyIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIzIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI0Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI1Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI2Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI3Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI4Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI5Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxMCJdLCJ0b29scyI6WyJyZWFkIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJyMTEiXSwidG9vbHMiOlsicmVhZCJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsicjEyIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxMyJdLCJ0b29scyI6WyJyZWFkIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJyMTQiXSwidG9vbHMiOlsicmVhZCJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsicjE1Il0sInRvb2xzIjpbInJlYWQiXX1dfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.zwNIcq4Hy3fRAMteJoGPTfyP5Z7-m0gJtfm56BRp3wx_scJjpN-9Jfh46OTgTeNJyUHhfs_RXnyaxdXzBX1TDA",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": true,
+      "reason": "ok"
+    },
+    {
+      "name": "v2-seventeen-permissions",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIwIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIyIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIzIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI0Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI1Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI2Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI3Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI4Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInI5Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxMCJdLCJ0b29scyI6WyJyZWFkIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJyMTEiXSwidG9vbHMiOlsicmVhZCJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsicjEyIl0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxMyJdLCJ0b29scyI6WyJyZWFkIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJyMTQiXSwidG9vbHMiOlsicmVhZCJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsicjE1Il0sInRvb2xzIjpbInJlYWQiXX0seyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbInIxNiJdLCJ0b29scyI6WyJyZWFkIl19XX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.H8MURFVp2mXOCdovU7mhCwoXL6MiP1tHI3Yu0pH2hBX89Mg9tncj_m6eswBpjdDMF7yJxJLfqybl420L_3kFAw",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "scope: permissions has more than 16 entries"
+    },
+    {
+      "name": "v2-empty-permissions",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.aR7bm35zETie2Cx9CzMiNduLEmVTonGQXNRcIpl8M-jdxyWZ1O2Xu6HwfMtcfseod0eHtm_Dws7Pv__cGUimBw",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "scope: permissions must not be empty"
+    },
+    {
+      "name": "v2-empty-tools",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbXX1dfSwic3ViamVjdCI6ImdUbDNEcWg5RjE5V28xUm13MHgtek11TmlwRzA3amVpWGZZUFc0X0pzNVEiLCJ0YXNrX2lkIjoidGFzay0xIiwidGVuYW50X2lkIjoidGVuYW50LTEifQ.v6GbO1T5n1z4AR4CHkKfq9k5tCJuusW8vkEUaTBUGom0Y27km1SpVMPDeHgec9aUkmMA70GW41kEjb304U5aDA",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "tools must not be empty"
+    },
+    {
+      "name": "v2-empty-resources",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbXSwidG9vbHMiOlsicmVhZCJdfV19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.dwegQ8jI6mykN-Qex8KODguMLsjTwm-cJ63fpKnE7FB8Pp8J0hSdiQS2j8lFAl59iVKqCPai46STeN1sseviCw",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "resources must not be empty"
+    },
+    {
+      "name": "v2-duplicate-entry-in-one-list",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6MSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbInJlYWQiLCJyZWFkIl19XX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.mrRuvKjBBnVD7QXhMcx4ANE524RK2nZhFZUNcxL7lrc8rLQqzBV20iyPoiSplcBsXYNvmYgqHK7Hb0YKBwwYAw",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "tools has duplicate entries"
+    },
+    {
+      "name": "v2-duplicate-permission",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbImRlcGxveS4qIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfV19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.vXrmN5UFt6Xu7IyTVIU9TTtLKMgaof1Ok521MoRxCn7-OKzujIbG5nq1QaAL3xxnQebeCDcpJyxciAIFi0dvBA",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "duplicate permission"
+    },
+    {
+      "name": "v2-both-key-sets",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7Im1heF9jb3N0X3Blcl9jYWxsIjo1LCJwZXJtaXNzaW9ucyI6W3sibWF4X2Nvc3RfcGVyX2NhbGwiOjUsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJkZXBsb3kuKiJdfSx7Im1heF9jb3N0X3Blcl9jYWxsIjoxLCJyZXNvdXJjZXMiOlsibG9ncy8qIl0sInRvb2xzIjpbInJlYWQiXX1dLCJyZXNvdXJjZXMiOlsiZW52LyoiXSwidG9vbHMiOlsiZGVwbG95LioiXX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.5bBWzbEQe4kCVC4UfjDL7A2W_5bMBkh1uL7dyVmdjj6RIcNnfDQEFAsAjH2TVQWkR2rkNC0y6h158RqOjqwJAQ",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "scope keys must be exactly"
+    },
+    {
+      "name": "v2-negative-cap",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6LTEsInJlc291cmNlcyI6WyJlbnYvKiJdLCJ0b29scyI6WyJyZWFkIl19XX0sInN1YmplY3QiOiJnVGwzRHFoOUYxOVdvMVJtdzB4LXpNdU5pcEcwN2plaVhmWVBXNF9KczVRIiwidGFza19pZCI6InRhc2stMSIsInRlbmFudF9pZCI6InRlbmFudC0xIn0.XXCf3vU9HUO_932NboRzTuCOnHwGfEoUHUsGOe4IqJvdRtJsSGj_85iuV3-E1ifLfztCgZ1iDkGMcgFucu1lBg",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "max_cost_per_call"
+    },
+    {
+      "name": "v2-body-under-v1-tag",
+      "encoded": "eyJidWRnZXQiOjEwMCwiZXhwaXJlc19hdCI6MTAwMDMwMCwiaXNzdWVkX2F0IjoxMDAwMDAwLCJpc3N1ZXIiOiJpc3N1ZXItYSIsIm1heF9kZXB0aCI6MywicHJpbmNpcGFsIjoic3ZjOmRlcGxveWVyIiwicHVycG9zZSI6ImRlcGxveSIsInNjb3BlIjp7InBlcm1pc3Npb25zIjpbeyJtYXhfY29zdF9wZXJfY2FsbCI6NSwicmVzb3VyY2VzIjpbImVudi8qIl0sInRvb2xzIjpbImRlcGxveS4qIl19LHsibWF4X2Nvc3RfcGVyX2NhbGwiOjEsInJlc291cmNlcyI6WyJsb2dzLyoiXSwidG9vbHMiOlsicmVhZCJdfV19LCJzdWJqZWN0IjoiZ1RsM0RxaDlGMTlXbzFSbXcweC16TXVOaXBHMDdqZWlYZllQVzRfSnM1USIsInRhc2tfaWQiOiJ0YXNrLTEiLCJ0ZW5hbnRfaWQiOiJ0ZW5hbnQtMSJ9.FJjIjG5TbQV8FS1GprjrmhL3oQWAPPT3WvBP96WoXKoecvrSdPmMzp6kw1tDFb-tHw8-hSsF3k3TO3zlhNnBDQ",
+      "now": 1000000,
+      "scope_v1_cutoff": 1000001,
+      "revoked": false,
+      "expect_valid": false,
+      "reason": "invalid issuer signature"
     }
   ]
 }
