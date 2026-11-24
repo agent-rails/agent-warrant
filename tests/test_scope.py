@@ -12,8 +12,11 @@ from agent_warrant.scope import (
     MAX_ENTRIES,
     MAX_PERMISSIONS,
     MAX_TOTAL_ENTRIES,
+    CallRefusal,
     Permission,
+    check_call,
     covers,
+    entry_covers,
     permissions_of,
     scope_narrows,
     scope_version,
@@ -474,3 +477,136 @@ def test_permission_coerces_lists_to_tuples():
 def test_permission_refuses_invalid_fields(tools, resources, cost, error):
     with pytest.raises(error):
         Permission(tools, resources, cost)
+
+
+PAIRED = (
+    Permission(("read_note",), ("notes/*",), 5),
+    Permission(("write_note",), ("todo",), 2),
+)
+
+
+def test_call_refusal_values():
+    assert CallRefusal.OUT_OF_SCOPE.value == "out_of_scope"
+    assert CallRefusal.COST_OVER_CALL_CAP.value == "cost_over_call_cap"
+
+
+def test_check_call_allows_a_pair_one_permission_covers():
+    assert check_call(PAIRED, "read_note", "notes/a", 5) is None
+    assert check_call(PAIRED, "write_note", "todo", 0) is None
+
+
+def test_check_call_refuses_a_pair_split_across_permissions():
+    assert check_call(PAIRED, "write_note", "notes/a", 0) is CallRefusal.OUT_OF_SCOPE
+    assert check_call(PAIRED, "read_note", "todo", 0) is CallRefusal.OUT_OF_SCOPE
+
+
+def test_check_call_refuses_cost_over_the_covering_permission_cap():
+    assert check_call(PAIRED, "read_note", "notes/a", 6) is CallRefusal.COST_OVER_CALL_CAP
+    assert check_call(PAIRED, "write_note", "todo", 3) is CallRefusal.COST_OVER_CALL_CAP
+
+
+def test_check_call_uses_the_cap_of_a_covering_permission_only():
+    permissions = (Permission(("read",), ("cheap",), 1), Permission(("write",), ("cheap",), 100))
+    assert check_call(permissions, "read", "cheap", 2) is CallRefusal.COST_OVER_CALL_CAP
+
+
+def test_check_call_allows_when_any_covering_permission_has_the_cap_in_any_order():
+    low = Permission(("read",), ("r/*",), 1)
+    high = Permission(("read",), ("r/x",), 9)
+    assert check_call((low, high), "read", "r/x", 9) is None
+    assert check_call((high, low), "read", "r/x", 9) is None
+    assert check_call((low, high), "read", "r/y", 9) is CallRefusal.COST_OVER_CALL_CAP
+
+
+def test_check_call_with_no_permissions_is_out_of_scope():
+    assert check_call((), "read", "r", 0) is CallRefusal.OUT_OF_SCOPE
+
+
+def test_check_call_on_a_v1_view_pairs_freely():
+    view = permissions_of(scope(["read", "write"], ["notes", "payroll"], 3))
+    assert check_call(view, "write", "payroll", 3) is None
+    assert check_call(view, "write", "payroll", 4) is CallRefusal.COST_OVER_CALL_CAP
+
+
+@pytest.mark.parametrize(
+    ("tool", "resource"),
+    [
+        ("read_note", "notes/../payroll"),
+        ("read_note", "notes/./a"),
+        ("read_note", "notes//a"),
+        ("read_note", "notes/*"),
+        ("read_note", "*"),
+        ("read_note", ""),
+        ("*", "notes/a"),
+        ("read_*", "notes/a"),
+        ("", "notes/a"),
+        ("read note", "notes/a"),
+        (None, "notes/a"),
+        ("read_note", 5),
+    ],
+)
+def test_check_call_refuses_non_concrete_or_invalid_values(tool, resource):
+    permissions = (Permission(("read_*", "read_note"), ("notes/*", "x"), 5),)
+    assert check_call(permissions, tool, resource, 0) is CallRefusal.OUT_OF_SCOPE
+
+
+@pytest.mark.parametrize("cost", [True, False, 1.0, "1", None])
+def test_check_call_refuses_a_non_integer_cost(cost):
+    with pytest.raises(TypeError):
+        check_call(PAIRED, "read_note", "notes/a", cost)
+
+
+@pytest.mark.parametrize("cost", [-1, MAX_SAFE_INTEGER + 1])
+def test_check_call_refuses_a_cost_out_of_range(cost):
+    with pytest.raises(ValueError):
+        check_call(PAIRED, "read_note", "notes/a", cost)
+
+
+def test_check_call_accepts_the_largest_cost():
+    permissions = (Permission(("read",), ("r",), MAX_SAFE_INTEGER),)
+    assert check_call(permissions, "read", "r", MAX_SAFE_INTEGER) is None
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        scope_v2(permission()),
+        [Permission(("read",), ("r",), 1)],
+        (permission(),),
+        None,
+    ],
+)
+def test_check_call_requires_a_tuple_of_permissions(permissions):
+    with pytest.raises(TypeError):
+        check_call(permissions, "read", "r", 0)
+
+
+def test_permission_covers_pairs_its_own_tools_and_resources():
+    item = Permission(("read", "deploy.*"), ("env/*", "todo"), 1)
+    assert item.covers("read", "todo")
+    assert item.covers("deploy.prod", "env/eu/db")
+    assert not item.covers("deployx", "todo")
+    assert not item.covers("read", "envx")
+    assert not item.covers("read", "env/../secret")
+    assert not item.covers("deploy.*", "todo")
+
+
+def test_permission_from_v1_with_empty_lists_covers_nothing():
+    assert not Permission((), ("r",), 1).covers("read", "r")
+    assert not Permission(("read",), (), 1).covers("read", "r")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "value", "expected"),
+    [
+        ("read", "read", True),
+        ("read", "read2", False),
+        ("deploy.*", "deploy.prod", True),
+        ("deploy.*", "deploy.", True),
+        ("deploy.*", "deployx", False),
+        ("deploy.*", "deploy.*", True),
+        ("env/*", "env/../secret", True),
+    ],
+)
+def test_entry_covers_matches_patterns_without_validating(pattern, value, expected):
+    assert entry_covers(pattern, value) is expected

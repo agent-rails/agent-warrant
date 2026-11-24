@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from .canonical import MAX_SAFE_INTEGER
@@ -160,6 +161,15 @@ class Permission:
         if reason:
             raise ValueError(reason)
 
+    def covers(self, tool: str, resource: str) -> bool:
+        """True if this permission allows `tool` on `resource`. Both must be concrete
+        ids (valid entries without `*`); anything else is not covered. Cost is not
+        checked here: check_call checks it against this permission's cap."""
+        return _is_concrete(tool) and _is_concrete(resource) and self._matches(tool, resource)
+
+    def _matches(self, tool: str, resource: str) -> bool:
+        return _covered_by_any(self.tools, tool) and _covered_by_any(self.resources, resource)
+
 
 def permissions_of(scope: Any) -> tuple[Permission, ...]:
     """The validated, immutable view of a v1 or v2 scope: one Permission per v2 item, or
@@ -172,7 +182,16 @@ def permissions_of(scope: Any) -> tuple[Permission, ...]:
     return tuple(Permission(item["tools"], item["resources"], item["max_cost_per_call"]) for item in items)
 
 
-def _entry_covers(pattern: str, value: str) -> bool:
+class CallRefusal(Enum):
+    OUT_OF_SCOPE = "out_of_scope"
+    COST_OVER_CALL_CAP = "cost_over_call_cap"
+
+
+def entry_covers(pattern: str, value: str) -> bool:
+    """True if the entry `pattern` covers `value`: a prefix pattern covers every value
+    starting with its stem, an exact id only itself. Pattern matching only: neither
+    argument is validated, so callers must refuse invalid or non-concrete values first
+    (check_call and Permission.covers do)."""
     if pattern.endswith("*"):
         return value.startswith(pattern[:-1])
     return pattern == value
@@ -184,8 +203,36 @@ def _entry_narrows(parent: str, child: str) -> bool:
     return parent == child
 
 
-def _covered_by_any(entries: list[str], value: str) -> bool:
-    return any(_entry_covers(pattern, value) for pattern in entries)
+def _covered_by_any(entries: list[str] | tuple[str, ...], value: str) -> bool:
+    return any(entry_covers(pattern, value) for pattern in entries)
+
+
+def _is_concrete(value: Any) -> bool:
+    return validate_entry(value) is None and "*" not in value
+
+
+def check_call(permissions: tuple[Permission, ...], tool: str, resource: str, cost: int) -> CallRefusal | None:
+    """Decide one call against a decoded scope view (permissions_of, or a record's
+    `.permissions`). The call is allowed (None) only if one permission covers both
+    `tool` and `resource` and `cost` is within that permission's cap. OUT_OF_SCOPE: no
+    permission covers the pair, or either id is not concrete. COST_OVER_CALL_CAP: some
+    permission covers the pair but none allows `cost`. A cost that is not an integer
+    from 0 to MAX_SAFE_INTEGER raises."""
+    if not isinstance(permissions, tuple) or not all(isinstance(item, Permission) for item in permissions):
+        raise TypeError("permissions must be a tuple of Permission")
+    if isinstance(cost, bool) or not isinstance(cost, int):
+        raise TypeError("cost must be an integer")
+    if not 0 <= cost <= MAX_SAFE_INTEGER:
+        raise ValueError(f"cost must be between 0 and {MAX_SAFE_INTEGER}")
+    if not (_is_concrete(tool) and _is_concrete(resource)):
+        return CallRefusal.OUT_OF_SCOPE
+    covered = False
+    for item in permissions:
+        if item._matches(tool, resource):
+            if cost <= item.max_cost_per_call:
+                return None
+            covered = True
+    return CallRefusal.COST_OVER_CALL_CAP if covered else CallRefusal.OUT_OF_SCOPE
 
 
 def covers(scope: dict[str, Any], tool: str, resource: str) -> bool:
@@ -195,9 +242,8 @@ def covers(scope: dict[str, Any], tool: str, resource: str) -> bool:
     both reduce to it."""
     if validate_scope_v1(scope):
         return False
-    for value in (tool, resource):
-        if validate_entry(value) or "*" in value:
-            return False
+    if not (_is_concrete(tool) and _is_concrete(resource)):
+        return False
     return _covered_by_any(scope["tools"], tool) and _covered_by_any(scope["resources"], resource)
 
 
