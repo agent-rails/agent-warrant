@@ -12,7 +12,7 @@ from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable
 from .identity import decode_public_key, encode_public_key, is_valid_public_key
 from .resolver import IssuerResolver
-from .scope import scope_narrows, validate_scope_v1
+from .scope import permissions_of, scope_narrows
 from .task_root import (
     CLOCK_SKEW_SECONDS,
     MAX_CHAIN_DEPTH,
@@ -117,9 +117,10 @@ def _validate_link_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
-    scope_refusal = validate_scope_v1(fields["scope"])
-    if scope_refusal:
-        raise ValueError(f"scope: {scope_refusal}")
+    try:
+        permissions_of(fields["scope"])
+    except ValueError as err:
+        raise ValueError(f"scope: {err}") from None
     if not 1 <= fields["depth"] <= MAX_CHAIN_DEPTH:
         raise ValueError(f"depth must be between 1 and {MAX_CHAIN_DEPTH}")
     if fields["expires_at"] <= fields["issued_at"]:
@@ -321,12 +322,15 @@ def verify_chain(
     *,
     expected_audience: str,
     expected_request_digest: str,
+    scope_v1_cutoff: int,
     max_proof_age_seconds: int = DEFAULT_PROOF_MAX_AGE_SECONDS,
 ) -> ChainVerifyResult:
     """Never raises on attacker-controlled `root_encoded`, `links_encoded` or
     `leaf_proof`; every failure is a fail-closed result. Verifies the root with
-    verify_root, then each link in order, then a fresh possession proof by the leaf
-    subject. A TaskRoot alone, without the leaf key, never yields a valid chain."""
+    check_root, then each link in order, then a fresh possession proof by the leaf
+    subject. A TaskRoot alone, without the leaf key, never yields a valid chain.
+    `scope_v1_cutoff` is passed to check_root: a root with a v1 scope issued at or
+    after it is refused. It is required and has no default."""
 
     def fail(reason: str) -> ChainVerifyResult:
         return ChainVerifyResult(valid=False, reason=reason, checked_at=now if isinstance(now, int) else 0)
@@ -354,7 +358,7 @@ def verify_chain(
     if revocation_checker is None or not callable(getattr(revocation_checker, "is_revoked", None)):
         raise TypeError("verify_chain requires a ChainRevocationChecker")
 
-    root_result = check_root(root_encoded, resolver, trust_policy, now)
+    root_result = check_root(root_encoded, resolver, trust_policy, now, scope_v1_cutoff=scope_v1_cutoff)
     if not root_result.valid or root_result.root is None:
         return fail(f"task root: {root_result.reason}")
     root = root_result.root

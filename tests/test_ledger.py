@@ -16,7 +16,7 @@ from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowa
 NOW = 1_000_000
 AUDIENCE = "executor-1"
 REQUEST = sha256_b64u(b"request-1")
-SCOPE = {"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5}
+SCOPE = {"permissions": [{"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5}]}
 POLICY = IssuerTrustPolicy(
     {
         "issuer-a": IssuerAllowance(
@@ -54,7 +54,7 @@ class World:
         )
 
     def verified(self):
-        return verify_root(self.root.encode(), self.resolver, POLICY, NeverRevoked(), NOW)
+        return verify_root(self.root.encode(), self.resolver, POLICY, NeverRevoked(), NOW, scope_v1_cutoff=0)
 
     def chain(self, length, budget=None):
         links, parent = [], self.root
@@ -296,7 +296,7 @@ def test_ledger_is_a_chain_revocation_checker_for_verify_chain(ledger, world):
     proof = prove_leaf(links[-1], world.keys[2], NOW, audience=AUDIENCE, request_digest=REQUEST).encode()
     encoded = [link.encode() for link in links]
     args = (world.root.encode(), encoded, proof, world.resolver, POLICY, ledger, NOW)
-    expected = {"expected_audience": AUDIENCE, "expected_request_digest": REQUEST}
+    expected = {"expected_audience": AUDIENCE, "expected_request_digest": REQUEST, "scope_v1_cutoff": 0}
     assert verify_chain(*args, **expected).valid is True
     ledger.revoke(links[0].binding(), NOW)
     result = verify_chain(*args, **expected)
@@ -320,6 +320,7 @@ def test_verify_chain_fails_closed_when_ledger_is_unreachable(tmp_path, world):
         NOW,
         expected_audience=AUDIENCE,
         expected_request_digest=REQUEST,
+        scope_v1_cutoff=0,
     )
     assert result.valid is False
     assert result.reason.startswith("revocation status unavailable")

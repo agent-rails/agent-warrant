@@ -34,7 +34,14 @@ class Revocation:
 
 @pytest.mark.parametrize("vector", DOC["vectors"], ids=lambda v: v["name"])
 def test_task_root_vector(vector):
-    result = verify_root(vector["encoded"], RESOLVER, POLICY, Revocation(vector["revoked"]), vector["now"])
+    result = verify_root(
+        vector["encoded"],
+        RESOLVER,
+        POLICY,
+        Revocation(vector["revoked"]),
+        vector["now"],
+        scope_v1_cutoff=vector["scope_v1_cutoff"],
+    )
     assert result.valid is vector["expect_valid"]
     assert vector["reason"] in result.reason
 

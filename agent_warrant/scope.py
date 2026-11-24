@@ -126,13 +126,15 @@ def validate_scope(scope: Any) -> str | None:
 def scope_version(scope: Any) -> int:
     """Return 2 for a {"permissions": [...]} scope and 1 for a v1 scope, judged by its
     keys only. Any other shape raises ValueError. Does not validate the contents."""
-    if isinstance(scope, dict):
-        keys = set(scope)
-        if keys == _SCOPE_V2_KEYS:
-            return 2
-        if keys == _SCOPE_KEYS:
-            return 1
+    if _is_v1(scope):
+        return 1
+    if isinstance(scope, dict) and set(scope) == _SCOPE_V2_KEYS:
+        return 2
     raise ValueError("scope is neither a v1 nor a v2 scope")
+
+
+def _is_v1(scope: Any) -> bool:
+    return isinstance(scope, dict) and set(scope) == _SCOPE_KEYS
 
 
 @dataclass(frozen=True)
@@ -184,12 +186,13 @@ class Permission:
 
 def permissions_of(scope: Any) -> tuple[Permission, ...]:
     """The validated, immutable view of a v1 or v2 scope: one Permission per v2 item, or
-    exactly one for a v1 scope. An invalid scope raises ValueError."""
-    version = scope_version(scope)
-    reason = validate_scope(scope) if version == 2 else validate_scope_v1(scope)
+    exactly one for a v1 scope. An invalid scope raises ValueError; a scope with neither
+    key set is judged as v2."""
+    is_v1 = _is_v1(scope)
+    reason = validate_scope_v1(scope) if is_v1 else validate_scope(scope)
     if reason:
         raise ValueError(reason)
-    items = scope["permissions"] if version == 2 else [scope]
+    items = [scope] if is_v1 else scope["permissions"]
     return tuple(Permission(item["tools"], item["resources"], item["max_cost_per_call"]) for item in items)
 
 

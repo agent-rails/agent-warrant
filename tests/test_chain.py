@@ -29,7 +29,13 @@ from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowa
 NOW = 1_000_000
 AUDIENCE = "executor-1"
 REQUEST = sha256_b64u(b"request-1")
-SCOPE = {"tools": ["deploy.*", "read"], "resources": ["env/*"], "max_cost_per_call": 5}
+
+
+def permission_scope(tools, resources, cost):
+    return {"permissions": [{"tools": tools, "resources": resources, "max_cost_per_call": cost}]}
+
+
+SCOPE = permission_scope(["deploy.*", "read"], ["env/*"], 5)
 POLICY = IssuerTrustPolicy(
     {
         "issuer-a": IssuerAllowance(
@@ -45,9 +51,13 @@ def prove_leaf(leaf, holder_key, now, audience=AUDIENCE, request_digest=REQUEST)
     return raw_prove_leaf(leaf, holder_key, now, audience=audience, request_digest=request_digest)
 
 
-def verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, **kwargs):
+def verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, scope_v1_cutoff=0, **kwargs):
     return raw_verify_chain(
-        *args, expected_audience=expected_audience, expected_request_digest=expected_request_digest, **kwargs
+        *args,
+        expected_audience=expected_audience,
+        expected_request_digest=expected_request_digest,
+        scope_v1_cutoff=scope_v1_cutoff,
+        **kwargs,
     )
 
 
@@ -180,12 +190,8 @@ def test_root_only_chain_needs_the_root_subject_key(world):
 
 
 def test_narrowing_scope_and_budget_along_the_chain(world):
-    first = world.link(
-        world.root, 0, scope={"tools": ["deploy.prod.*"], "resources": ["env/prod"], "max_cost_per_call": 3}, budget=50
-    )
-    second = world.link(
-        first, 1, scope={"tools": ["deploy.prod.eu"], "resources": ["env/prod"], "max_cost_per_call": 1}, budget=10
-    )
+    first = world.link(world.root, 0, scope=permission_scope(["deploy.prod.*"], ["env/prod"], 3), budget=50)
+    second = world.link(first, 1, scope=permission_scope(["deploy.prod.eu"], ["env/prod"], 1), budget=10)
     assert world.verify([first, second]).valid is True
 
 
@@ -215,14 +221,12 @@ def test_delegate_refuses_key_that_is_not_the_parents_subject(world):
 
 def test_delegate_refuses_wider_scope(world):
     with pytest.raises(ValueError, match="narrow"):
-        world.link(
-            world.root, 0, scope={"tools": ["deploy.*", "admin"], "resources": ["env/*"], "max_cost_per_call": 5}
-        )
+        world.link(world.root, 0, scope=permission_scope(["deploy.*", "admin"], ["env/*"], 5))
 
 
 def test_delegate_refuses_higher_cost(world):
     with pytest.raises(ValueError, match="narrow"):
-        world.link(world.root, 0, scope={**SCOPE, "max_cost_per_call": 6})
+        world.link(world.root, 0, scope=permission_scope(["deploy.*", "read"], ["env/*"], 6))
 
 
 def test_delegate_refuses_higher_budget(world):
@@ -495,13 +499,13 @@ def test_depth_zero_is_malformed(world):
 
 
 def test_widened_scope_fails(world):
-    forged = world.forge(world.keys[0], world.root, scope={**SCOPE, "tools": ["deploy.*", "admin"]})
+    forged = world.forge(world.keys[0], world.root, scope=permission_scope(["deploy.*", "admin"], ["env/*"], 5))
     result = world.verify([forged])
     assert (result.valid, result.reason) == (False, "link 1: scope does not narrow the previous scope")
 
 
 def test_widened_scope_at_second_hop_fails(world):
-    first = world.link(world.root, 0, scope={"tools": ["read"], "resources": ["env/*"], "max_cost_per_call": 5})
+    first = world.link(world.root, 0, scope=permission_scope(["read"], ["env/*"], 5))
     forged = world.forge(world.keys[1], first, scope=SCOPE)
     assert (
         world.verify([first, forged], holder_key=world.keys[2]).reason
@@ -826,6 +830,7 @@ def audience_verify(world, links, proof, audience=AUDIENCE, request=REQUEST, now
         now,
         expected_audience=audience,
         expected_request_digest=request,
+        scope_v1_cutoff=0,
         **kwargs,
     )
 
@@ -914,6 +919,22 @@ def test_verify_chain_requires_audience_and_request_arguments(world):
             NeverRevoked(),
             NOW,
         )
+
+
+def test_verify_chain_requires_the_scope_v1_cutoff(world):
+    links = world.chain(1)
+    proof = prove_leaf(links[0], world.keys[1], NOW).encode()
+    args = (world.root.encode(), [links[0].encode()], proof, world.resolver, POLICY, NeverRevoked(), NOW)
+    with pytest.raises(TypeError):
+        chain_module.verify_chain(*args, expected_audience=AUDIENCE, expected_request_digest=REQUEST)
+    with pytest.raises(TypeError):
+        chain_module.verify_chain(
+            *args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, scope_v1_cutoff=True
+        )
+    result = chain_module.verify_chain(
+        *args, expected_audience=AUDIENCE, expected_request_digest=REQUEST, scope_v1_cutoff=0
+    )
+    assert result.valid is True
 
 
 class OddChainChecker:

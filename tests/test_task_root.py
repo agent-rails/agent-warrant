@@ -10,16 +10,23 @@ from agent_warrant.canonical import canonicalize, signing_input
 from agent_warrant.exceptions import RevocationSourceUnreachable
 from agent_warrant.identity import encode_public_key, generate_keypair
 from agent_warrant.resolver import PinnedResolver
+from agent_warrant.scope import Permission
 from agent_warrant.task_root import (
     MAX_CHAIN_DEPTH,
     MAX_TTL,
+    RECORD_VERSION,
     TaskRoot,
+    check_root,
     issue_task_root,
-    verify_root,
+)
+from agent_warrant.task_root import (
+    verify_root as raw_verify_root,
 )
 from agent_warrant.trust import IssuerAllowance, IssuerTrustPolicy, TenantAllowance
 
 NOW = 1_000_000
+SCOPE = {"permissions": [{"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5}]}
+V1_SCOPE = {"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5}
 POLICY = IssuerTrustPolicy(
     {
         "issuer-a": IssuerAllowance(
@@ -40,6 +47,10 @@ class FakeRevocation:
         if self.unreachable:
             raise RevocationSourceUnreachable("down")
         return binding in self.revoked
+
+
+def verify_root(*args, scope_v1_cutoff=0, **kwargs):
+    return raw_verify_root(*args, scope_v1_cutoff=scope_v1_cutoff, **kwargs)
 
 
 def b64u(data):
@@ -67,7 +78,7 @@ def make_fields(**overrides):
         "max_depth": 3,
         "issued_at": NOW,
         "expires_at": NOW + 300,
-        "scope": {"tools": ["deploy.*"], "resources": ["env/*"], "max_cost_per_call": 5},
+        "scope": SCOPE,
         "subject": encode_public_key(generate_keypair().public_key()),
     }
     fields.update(overrides)
@@ -78,7 +89,7 @@ def make_root(issuer_key, **overrides):
     return issue_task_root(issuer_key, **make_fields(**overrides))
 
 
-def forge(issuer_key, body_fields, tag_type="task-root", version=1, raw_body=None):
+def forge(issuer_key, body_fields, tag_type="task-root", version=2, raw_body=None):
     body = raw_body if raw_body is not None else canonicalize(body_fields)
     signature = issuer_key.sign(signing_input(tag_type, version, body_fields))
     return f"{b64u(body)}.{b64u(signature)}"
@@ -227,8 +238,21 @@ def test_wrong_domain_tag_does_not_verify_as_task_root(issuer_key, resolver):
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
-def test_wrong_version_tag_does_not_verify(issuer_key, resolver):
-    result = verify_root(forge(issuer_key, make_fields(), version=2), resolver, POLICY, FakeRevocation(), NOW)
+@pytest.mark.parametrize("version", [1, 3])
+def test_wrong_version_tag_does_not_verify(issuer_key, resolver, version):
+    result = verify_root(forge(issuer_key, make_fields(), version=version), resolver, POLICY, FakeRevocation(), NOW)
+    assert (result.valid, result.reason) == (False, "invalid issuer signature")
+
+
+def test_v1_body_under_the_v2_tag_does_not_verify(issuer_key, resolver):
+    encoded = forge(issuer_key, make_fields(scope=V1_SCOPE), version=2)
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=NOW + 1)
+    assert (result.valid, result.reason) == (False, "invalid issuer signature")
+
+
+def test_v2_body_under_the_v1_tag_does_not_verify(issuer_key, resolver):
+    encoded = forge(issuer_key, make_fields(), version=1)
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=NOW + 1)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
 
 
@@ -275,8 +299,14 @@ def test_v1_grant_encoding_is_not_a_task_root(issuer_key, resolver):
         ({"task_id": ""}, "task_id must be a non-empty string"),
         ({"tenant_id": 5}, "tenant_id must be a non-empty string"),
         ({"purpose": "p" * 257}, "purpose is longer than"),
-        ({"scope": {"tools": ["*"], "resources": [], "max_cost_per_call": 1}}, "scope: tools"),
+        (
+            {"scope": {"permissions": [{"tools": ["*"], "resources": ["r"], "max_cost_per_call": 1}]}},
+            "scope: permissions\\[0\\]: tools",
+        ),
+        ({"scope": {"permissions": []}}, "scope: permissions must not be empty"),
         ({"scope": {"tools": [], "resources": []}}, "scope: scope keys"),
+        ({"scope": V1_SCOPE}, "scope: a v1 scope cannot be issued"),
+        ({"scope": {"tools": ["*"], "resources": [], "max_cost_per_call": 1}}, "scope: tools"),
         ({"scope": "all"}, "scope: scope must be an object"),
         ({"subject": "not-a-key"}, "subject is not a canonical"),
         ({"subject": "AAAA"}, "subject is not a canonical"),
@@ -380,7 +410,7 @@ def test_all_printable_ascii_ids_are_accepted(issuer_key):
 
 
 def reencoded(issuer_key, fields, body):
-    signature = issuer_key.sign(signing_input("task-root", 1, fields))
+    signature = issuer_key.sign(signing_input("task-root", 2, fields))
     return f"{b64u(body)}.{b64u(signature)}"
 
 
@@ -415,7 +445,8 @@ def test_exactly_one_encoding_verifies(issuer_key, resolver):
 def test_scope_is_covered_by_the_signature(issuer_key, resolver):
     root = make_root(issuer_key)
     widened = dataclasses.replace(
-        root, scope={"tools": ["deploy.*", "admin.*"], "resources": ["env/*"], "max_cost_per_call": 5}
+        root,
+        scope={"permissions": [{"tools": ["deploy.*", "admin.*"], "resources": ["env/*"], "max_cost_per_call": 5}]},
     )
     result = verify_root(widened.encode(), resolver, POLICY, FakeRevocation(), NOW)
     assert (result.valid, result.reason) == (False, "invalid issuer signature")
@@ -427,11 +458,9 @@ def test_scope_round_trips(issuer_key):
 
 
 def test_check_root_skips_revocation_and_verify_root_does_not(issuer_key, resolver):
-    from agent_warrant.task_root import check_root
-
     root = make_root(issuer_key)
     checker = FakeRevocation({root.binding()})
-    assert check_root(root.encode(), resolver, POLICY, NOW).valid is True
+    assert check_root(root.encode(), resolver, POLICY, NOW, scope_v1_cutoff=0).valid is True
     assert verify_root(root.encode(), resolver, POLICY, checker, NOW).valid is False
 
 
@@ -468,3 +497,105 @@ def test_verify_root_keeps_the_unreachable_reason(issuer_key, resolver):
     root = make_root(issuer_key)
     result = verify_root(root.encode(), resolver, POLICY, OddChecker(RevocationSourceUnreachable("down")), NOW)
     assert (result.valid, result.reason) == (False, "revocation status unavailable: down")
+
+
+def v1_root(issuer_key, **overrides):
+    return forge(issuer_key, make_fields(scope=V1_SCOPE, **overrides), version=1)
+
+
+def test_issued_root_is_signed_under_the_v2_tag(issuer_key):
+    root = make_root(issuer_key)
+    assert RECORD_VERSION == 2
+    assert root.scope_version == 2
+    assert root.signing_bytes() == signing_input("task-root", 2, root.signable_fields())
+    issuer_key.public_key().verify(base64.urlsafe_b64decode(root.proof + "=="), root.signing_bytes())
+
+
+def test_issued_and_decoded_roots_carry_an_immutable_permissions_view(issuer_key):
+    root = make_root(issuer_key)
+    expected = (Permission(("deploy.*",), ("env/*",), 5),)
+    assert root.permissions == expected
+    decoded = TaskRoot.decode(root.encode())
+    assert decoded.permissions == expected
+    assert decoded.scope_version == 2
+    decoded.scope["permissions"][0]["tools"].append("admin.*")
+    decoded.scope["permissions"].append({"tools": ["x"], "resources": ["y"], "max_cost_per_call": 9})
+    assert decoded.permissions == expected
+
+
+def test_v1_root_before_the_cutoff_verifies_as_one_permission(issuer_key, resolver):
+    result = verify_root(v1_root(issuer_key), resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=NOW + 1)
+    assert (result.valid, result.reason) == (True, "ok")
+    assert result.root.scope_version == 1
+    assert result.root.scope == V1_SCOPE
+    assert result.root.permissions == (Permission(("deploy.*",), ("env/*",), 5),)
+
+
+def test_v1_root_keeps_its_v1_binding(issuer_key):
+    root = TaskRoot.decode(v1_root(issuer_key))
+    assert root.signing_bytes() == signing_input("task-root", 1, root.signable_fields())
+
+
+@pytest.mark.parametrize("cutoff", [0, 1, NOW - 1, NOW])
+def test_v1_root_issued_at_or_after_the_cutoff_is_refused(issuer_key, resolver, cutoff):
+    result = verify_root(v1_root(issuer_key), resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=cutoff)
+    assert (result.valid, result.reason) == (False, "scope_v1_expired")
+
+
+def test_check_root_applies_the_cutoff(issuer_key, resolver):
+    encoded = v1_root(issuer_key)
+    assert check_root(encoded, resolver, POLICY, NOW, scope_v1_cutoff=NOW + 1).valid is True
+    assert check_root(encoded, resolver, POLICY, NOW, scope_v1_cutoff=NOW).reason == "scope_v1_expired"
+
+
+def test_the_cutoff_does_not_apply_to_v2_roots(issuer_key, resolver):
+    root = make_root(issuer_key)
+    assert verify_root(root.encode(), resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=0).valid is True
+
+
+def test_a_v1_root_past_the_cutoff_still_decodes(issuer_key):
+    assert TaskRoot.decode(v1_root(issuer_key)).scope_version == 1
+
+
+def test_a_v1_root_with_an_invalid_scope_is_malformed(issuer_key, resolver):
+    encoded = forge(issuer_key, make_fields(scope={**V1_SCOPE, "tools": ["*"]}), version=1)
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=NOW + 1)
+    assert result.valid is False
+    assert result.reason.startswith("malformed task root: scope: tools")
+
+
+def test_an_unknown_scope_shape_is_malformed(issuer_key, resolver):
+    encoded = forge(issuer_key, make_fields(scope={"grants": []}))
+    result = verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW)
+    assert result.reason == "malformed task root: scope: scope keys must be exactly ['permissions']"
+
+
+def test_the_cutoff_is_keyword_only_without_a_default(issuer_key, resolver):
+    encoded = make_root(issuer_key).encode()
+    with pytest.raises(TypeError):
+        raw_verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW)
+    with pytest.raises(TypeError):
+        raw_verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW, 0)
+    with pytest.raises(TypeError):
+        check_root(encoded, resolver, POLICY, NOW)
+    with pytest.raises(TypeError):
+        check_root(encoded, resolver, POLICY, NOW, 0)
+
+
+@pytest.mark.parametrize(
+    ("cutoff", "error"), [(True, TypeError), (1.0, TypeError), ("0", TypeError), (None, TypeError), (-1, ValueError)]
+)
+def test_an_invalid_cutoff_raises(issuer_key, resolver, cutoff, error):
+    encoded = make_root(issuer_key).encode()
+    with pytest.raises(error):
+        check_root(encoded, resolver, POLICY, NOW, scope_v1_cutoff=cutoff)
+    with pytest.raises(error):
+        verify_root(encoded, resolver, POLICY, FakeRevocation(), NOW, scope_v1_cutoff=cutoff)
+
+
+def test_replace_recomputes_the_permissions_view(issuer_key):
+    root = make_root(issuer_key)
+    other = {"permissions": [{"tools": ["read"], "resources": ["r"], "max_cost_per_call": 1}]}
+    assert dataclasses.replace(root, scope=other).permissions == (Permission(("read",), ("r",), 1),)
+    with pytest.raises(ValueError, match="scope"):
+        dataclasses.replace(root, scope={"grants": []})

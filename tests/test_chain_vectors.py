@@ -48,6 +48,7 @@ def test_chain_vector(vector):
         vector["now"],
         expected_audience=vector["expected_audience"],
         expected_request_digest=vector["expected_request_digest"],
+        scope_v1_cutoff=vector["scope_v1_cutoff"],
     )
     assert result.valid is vector["expect_valid"]
     assert vector["reason"] in result.reason
@@ -65,6 +66,7 @@ def test_vector_bindings_are_pinned():
         valid["now"],
         expected_audience=valid["expected_audience"],
         expected_request_digest=valid["expected_request_digest"],
+        scope_v1_cutoff=valid["scope_v1_cutoff"],
     )
     assert result.root.binding() == DOC["root_binding"]
     assert [link.binding() for link in result.links] == DOC["leaf_bindings"]
