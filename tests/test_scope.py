@@ -346,7 +346,6 @@ def test_scope_version_refuses_unknown_shapes(value):
         scope_v2(*[permission([f"t{i}"], [f"r{i}"]) for i in range(MAX_PERMISSIONS)]),
         scope_v2(permission([f"t{i}" for i in range(32)], [f"r{i}" for i in range(32)])),
         scope_v2(permission(["read"], ["notes/*"]), permission(["read"], ["todo"])),
-        scope_v2(permission(["a", "b"]), permission(["b", "a"])),
         scope_v2(permission(cost=0)),
         scope_v2(permission(cost=MAX_SAFE_INTEGER)),
         scope_v2(permission(["deploy.*"], ["env/*"])),
@@ -697,7 +696,17 @@ v2_permissions = st.builds(
     st.integers(min_value=0, max_value=10),
 )
 v2_scopes = st.builds(
-    lambda items: {"permissions": items}, st.lists(v2_permissions, min_size=1, max_size=3, unique_by=str)
+    lambda items: {"permissions": items},
+    st.lists(
+        v2_permissions,
+        min_size=1,
+        max_size=3,
+        unique_by=lambda item: (
+            tuple(sorted(item["tools"])),
+            tuple(sorted(item["resources"])),
+            item["max_cost_per_call"],
+        ),
+    ),
 )
 
 
@@ -845,3 +854,27 @@ def test_permission_refuses_more_than_64_entries_before_checking_them(entry_chec
 def test_permission_allows_64_entries_per_list():
     built = Permission(tuple(f"t{index}" for index in range(MAX_ENTRIES)), ("r",), 1)
     assert len(built.tools) == MAX_ENTRIES
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (permission(tools=["read", "write"]), permission(tools=["write", "read"])),
+        (permission(tools=["write", "read"]), permission(tools=["read", "write"])),
+        (permission(resources=["env/a", "env/b"]), permission(resources=["env/b", "env/a"])),
+        (permission(resources=["env/b", "env/a"]), permission(resources=["env/a", "env/b"])),
+        (
+            permission(tools=["read", "write"], resources=["env/a", "env/b"]),
+            permission(tools=["write", "read"], resources=["env/b", "env/a"]),
+        ),
+    ],
+)
+def test_validate_scope_refuses_duplicate_permissions_in_any_order(first, second):
+    assert validate_scope(scope_v2(first, second)) == "permissions[1]: duplicate permission"
+
+
+def test_validate_scope_allows_permissions_differing_only_in_cap():
+    assert (
+        validate_scope(scope_v2(permission(tools=["read", "write"]), permission(tools=["write", "read"], cost=3)))
+        is None
+    )

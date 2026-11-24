@@ -104,7 +104,8 @@ def validate_scope(scope: Any) -> str | None:
     """Return why `scope` is not a valid v2 scope, or None if it is. The shape is exactly
     {"permissions": [{"tools": [...], "resources": [...], "max_cost_per_call": int}, ...]}:
     1 to 16 permissions, each with non-empty lists of valid entries and no entry twice in
-    one list, at most 64 tool and resource entries in total, and no permission twice."""
+    one list, at most 64 tool and resource entries in total, and no permission twice in
+    any list order."""
     if not isinstance(scope, dict):
         return "scope must be an object"
     if set(scope) != _SCOPE_V2_KEYS:
@@ -117,6 +118,7 @@ def validate_scope(scope: Any) -> str | None:
     if len(items) > MAX_PERMISSIONS:
         return f"permissions has more than {MAX_PERMISSIONS} entries"
     total = 0
+    seen = set()
     for position, item in enumerate(items):
         reason = _permission_shape_refusal(item)
         if reason:
@@ -127,8 +129,10 @@ def validate_scope(scope: Any) -> str | None:
         reason = _permission_entries_refusal(item)
         if reason:
             return f"permissions[{position}]: {reason}"
-        if item in items[:position]:
+        key = (tuple(sorted(item["tools"])), tuple(sorted(item["resources"])), item["max_cost_per_call"])
+        if key in seen:
             return f"permissions[{position}]: duplicate permission"
+        seen.add(key)
     return None
 
 
