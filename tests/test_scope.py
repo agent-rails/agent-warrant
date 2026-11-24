@@ -716,3 +716,89 @@ def test_covers_is_removed():
         from agent_warrant.scope import covers
 
         assert covers is None
+
+
+class AlwaysWithin(int):
+    def __le__(self, other):
+        return True
+
+    def __ge__(self, other):
+        return True
+
+    def __lt__(self, other):
+        return True
+
+    def __gt__(self, other):
+        return True
+
+
+class MatchesAnything(str):
+    def startswith(self, *args, **kwargs):
+        return True
+
+    def __eq__(self, other):
+        return True
+
+    def __hash__(self):
+        return str.__hash__(self)
+
+
+SUBCLASS_VIEW = (Permission(("read.*",), ("env/*",), 10),)
+
+
+def test_check_call_refuses_an_int_subclass_cost():
+    with pytest.raises(TypeError, match="cost must be an integer"):
+        check_call(SUBCLASS_VIEW, "read.x", "env/x", AlwaysWithin(10**30))
+
+
+def test_check_call_refuses_str_subclass_ids():
+    assert (
+        check_call(SUBCLASS_VIEW, MatchesAnything("admin"), MatchesAnything("payroll"), 0) is CallRefusal.OUT_OF_SCOPE
+    )
+    assert check_call(SUBCLASS_VIEW, MatchesAnything("read.x"), "env/x", 0) is CallRefusal.OUT_OF_SCOPE
+    assert check_call(SUBCLASS_VIEW, "read.x", MatchesAnything("env/x"), 0) is CallRefusal.OUT_OF_SCOPE
+
+
+def test_permission_covers_refuses_str_subclass_ids():
+    assert not SUBCLASS_VIEW[0].covers(MatchesAnything("admin"), MatchesAnything("payroll"))
+
+
+def test_check_call_refuses_a_permission_subclass():
+    class CoversEverything(Permission):
+        def _matches(self, tool, resource):
+            return True
+
+    with pytest.raises(TypeError, match="tuple of Permission"):
+        check_call((CoversEverything(("read",), ("r",), 10),), "admin", "payroll", 0)
+
+
+@pytest.mark.parametrize(
+    "tools, resources, cost",
+    [
+        ((MatchesAnything("read"),), ("r",), 1),
+        (("read",), (MatchesAnything("r"),), 1),
+        (("read",), ("r",), AlwaysWithin(1)),
+    ],
+)
+def test_permission_refuses_subclassed_fields(tools, resources, cost):
+    with pytest.raises(ValueError):
+        Permission(tools, resources, cost)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        scope_v2(permission(tools=[MatchesAnything("read")])),
+        scope_v2(permission(resources=[MatchesAnything("r")])),
+        scope_v2(permission(cost=AlwaysWithin(1))),
+        scope([MatchesAnything("read")], ["r"], 1),
+        scope(["read"], ["r"], AlwaysWithin(1)),
+    ],
+)
+def test_validate_scope_refuses_subclassed_entries_and_caps(value):
+    validator = validate_scope_v1 if "tools" in value else validate_scope
+    assert validator(value) is not None
+
+
+def test_validate_entry_refuses_a_str_subclass():
+    assert validate_entry(MatchesAnything("read")) == "entry must be a non-empty string"

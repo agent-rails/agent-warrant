@@ -19,13 +19,14 @@ def validate_entry(entry: Any) -> str | None:
     """Return why `entry` is not a valid scope entry, or None if it is.
 
     An entry is an exact id or a prefix pattern. Ids are ASCII printable without
-    whitespace (callers normalise before). A prefix pattern is a non-empty prefix
+    whitespace (callers normalise before), and exactly `str`: a subclass could override
+    the comparisons matching relies on. A prefix pattern is a non-empty prefix
     ending at a separator (. : / _ -) followed by a single trailing `*`: `deploy.*`
     is valid, `deploy*`, `*` and `a*b` are not. Ids are opaque strings, never resolved
     as paths or decoded: `/` only delimits segments, and a segment may not be empty,
     `.` or `..` (a pattern stem may end in `/`), so `env/prod/../secret` is refused.
     """
-    if not isinstance(entry, str) or not entry:
+    if type(entry) is not str or not entry:
         return "entry must be a non-empty string"
     if len(entry) > MAX_ID_CHARACTERS:
         return f"entry is longer than {MAX_ID_CHARACTERS} characters"
@@ -69,7 +70,7 @@ def validate_scope_v1(scope: Any) -> str | None:
 
 
 def _cost_refusal(cost: Any) -> str | None:
-    if isinstance(cost, bool) or not isinstance(cost, int) or not 0 <= cost <= MAX_SAFE_INTEGER:
+    if type(cost) is not int or not 0 <= cost <= MAX_SAFE_INTEGER:
         return f"max_cost_per_call must be an integer between 0 and {MAX_SAFE_INTEGER}"
     return None
 
@@ -222,7 +223,7 @@ def _covered_by_any(entries: tuple[str, ...], value: str) -> bool:
 
 
 def _is_concrete(value: Any) -> bool:
-    return validate_entry(value) is None and "*" not in value
+    return type(value) is str and validate_entry(value) is None and "*" not in value
 
 
 def check_call(permissions: tuple[Permission, ...], tool: str, resource: str, cost: int) -> CallRefusal | None:
@@ -230,11 +231,12 @@ def check_call(permissions: tuple[Permission, ...], tool: str, resource: str, co
     `.permissions`). The call is allowed (None) only if one permission covers both
     `tool` and `resource` and `cost` is within that permission's cap. OUT_OF_SCOPE: no
     permission covers the pair, or either id is not concrete. COST_OVER_CALL_CAP: some
-    permission covers the pair but none allows `cost`. A cost that is not an integer
-    from 0 to MAX_SAFE_INTEGER raises."""
-    if not isinstance(permissions, tuple) or not all(isinstance(item, Permission) for item in permissions):
+    permission covers the pair but none allows `cost`. Ids, cost and permissions must be
+    exactly str, int and Permission, never subclasses. A cost that is not an integer from
+    0 to MAX_SAFE_INTEGER raises."""
+    if type(permissions) is not tuple or not all(type(item) is Permission for item in permissions):
         raise TypeError("permissions must be a tuple of Permission")
-    if isinstance(cost, bool) or not isinstance(cost, int):
+    if type(cost) is not int:
         raise TypeError("cost must be an integer")
     if not 0 <= cost <= MAX_SAFE_INTEGER:
         raise ValueError(f"cost must be between 0 and {MAX_SAFE_INTEGER}")
