@@ -70,3 +70,23 @@ def test_vector_bindings_are_pinned():
     )
     assert result.root.binding() == DOC["root_binding"]
     assert [link.binding() for link in result.links] == DOC["leaf_bindings"]
+
+
+def test_v2_vector_bindings_are_pinned():
+    valid = next(vector for vector in DOC["vectors"] if vector["name"] == "v2-depth-2")
+    result = verify_chain(
+        valid["root"],
+        valid["links"],
+        valid["leaf_proof"],
+        RESOLVER,
+        POLICY,
+        Checker(valid),
+        valid["now"],
+        expected_audience=valid["expected_audience"],
+        expected_request_digest=valid["expected_request_digest"],
+        scope_v1_cutoff=valid["scope_v1_cutoff"],
+    )
+    assert result.valid is True
+    assert result.root.binding() == DOC["v2_root_binding"]
+    assert [link.binding() for link in result.links] == DOC["v2_leaf_bindings"]
+    assert [link.scope_version for link in result.links] == [2, 2]

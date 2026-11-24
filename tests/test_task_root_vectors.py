@@ -52,3 +52,18 @@ def test_valid_vector_decodes_to_documented_fields_and_binding():
     assert root.signable_fields() == DOC["root_fields"]
     assert root.binding() == DOC["binding"]
     assert root.encode() == valid["encoded"]
+
+
+def test_v2_vector_decodes_to_documented_fields():
+    valid = next(vector for vector in DOC["vectors"] if vector["name"] == "v2-valid")
+    root = TaskRoot.decode(valid["encoded"])
+    assert root.signable_fields() == DOC["v2_root_fields"]
+    assert root.scope_version == 2
+    assert root.encode() == valid["encoded"]
+
+
+def test_v2_bindings_are_pinned_and_differ_by_order():
+    vectors = {vector["name"]: vector for vector in DOC["vectors"]}
+    bindings = {name: TaskRoot.decode(vectors[name]["encoded"]).binding() for name in DOC["v2_bindings"]}
+    assert bindings == DOC["v2_bindings"]
+    assert len(set(bindings.values())) == len(bindings)
