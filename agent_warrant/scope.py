@@ -217,7 +217,7 @@ def _entry_narrows(parent: str, child: str) -> bool:
     return parent == child
 
 
-def _covered_by_any(entries: list[str] | tuple[str, ...], value: str) -> bool:
+def _covered_by_any(entries: tuple[str, ...], value: str) -> bool:
     return any(entry_covers(pattern, value) for pattern in entries)
 
 
@@ -247,18 +247,6 @@ def check_call(permissions: tuple[Permission, ...], tool: str, resource: str, co
                 return None
             covered = True
     return CallRefusal.COST_OVER_CALL_CAP if covered else CallRefusal.OUT_OF_SCOPE
-
-
-def covers(scope: dict[str, Any], tool: str, resource: str) -> bool:
-    """True if `scope` allows `tool` on `resource`. Both must be concrete ids (no `*`);
-    anything else, or an invalid scope, is not covered. Cost is checked separately
-    against `max_cost_per_call`. This is the only matcher: enforcement and narrowing
-    both reduce to it."""
-    if validate_scope_v1(scope):
-        return False
-    if not (_is_concrete(tool) and _is_concrete(resource)):
-        return False
-    return _covered_by_any(scope["tools"], tool) and _covered_by_any(scope["resources"], resource)
 
 
 def _narrows(parent: tuple[Permission, ...], child: tuple[Permission, ...]) -> bool:

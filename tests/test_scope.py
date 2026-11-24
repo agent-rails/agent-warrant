@@ -15,7 +15,6 @@ from agent_warrant.scope import (
     CallRefusal,
     Permission,
     check_call,
-    covers,
     entry_covers,
     permissions_of,
     scope_narrows,
@@ -36,6 +35,14 @@ def permission(tools=("read",), resources=("r",), cost=10):
 
 def scope_v2(*items):
     return {"permissions": list(items)}
+
+
+def allows(value, tool, resource):
+    try:
+        view = permissions_of(value)
+    except ValueError:
+        return False
+    return check_call(view, tool, resource, 0) is None
 
 
 @pytest.mark.parametrize(
@@ -112,36 +119,36 @@ def test_invalid_scopes(value):
 
 def test_exact_entry_covers_only_itself():
     s = scope(["read"], ["r"])
-    assert covers(s, "read", "r")
-    assert not covers(s, "read2", "r")
-    assert not covers(s, "read", "r2")
+    assert allows(s, "read", "r")
+    assert not allows(s, "read2", "r")
+    assert not allows(s, "read", "r2")
 
 
 def test_prefix_covers_children_not_siblings():
     s = scope(["deploy.*"], ["env/*"])
-    assert covers(s, "deploy.prod", "env/prod")
-    assert covers(s, "deploy.a.b", "env/x/y")
-    assert not covers(s, "deployx", "env/prod")
-    assert not covers(s, "deploy", "env/prod")
-    assert not covers(s, "deploy.prod", "envx")
+    assert allows(s, "deploy.prod", "env/prod")
+    assert allows(s, "deploy.a.b", "env/x/y")
+    assert not allows(s, "deployx", "env/prod")
+    assert not allows(s, "deploy", "env/prod")
+    assert not allows(s, "deploy.prod", "envx")
 
 
 def test_deploy_star_without_separator_is_refused_not_matched():
-    assert not covers({"tools": ["deploy*"], "resources": ["r"], "max_cost_per_call": 1}, "deploy_prod", "r")
+    assert not allows({"tools": ["deploy*"], "resources": ["r"], "max_cost_per_call": 1}, "deploy_prod", "r")
 
 
 def test_empty_lists_cover_nothing():
-    assert not covers(scope(), "a", "b")
-    assert not covers(scope(["a"], []), "a", "b")
+    assert not allows(scope(), "a", "b")
+    assert not allows(scope(["a"], []), "a", "b")
 
 
 @pytest.mark.parametrize("tool", ["*", "a.*", "", "a b", "café"])
 def test_non_concrete_or_invalid_query_ids_are_not_covered(tool):
-    assert not covers(scope(["a.*", "*x"], ["r"]), tool, "r")
+    assert not allows(scope(["a.*", "*x"], ["r"]), tool, "r")
 
 
 def test_invalid_scope_covers_nothing():
-    assert not covers({"tools": ["*"], "resources": ["*"], "max_cost_per_call": 1}, "a", "b")
+    assert not allows({"tools": ["*"], "resources": ["*"], "max_cost_per_call": 1}, "a", "b")
 
 
 def test_narrows_identical_and_subset():
@@ -207,8 +214,8 @@ scopes = st.builds(
 
 @given(parent=scopes, child=scopes, tool=concrete_ids, resource=concrete_ids)
 def test_narrowing_never_widens(parent, child, tool, resource):
-    if scope_narrows(parent, child) and covers(child, tool, resource):
-        assert covers(parent, tool, resource)
+    if scope_narrows(parent, child) and allows(child, tool, resource):
+        assert allows(parent, tool, resource)
 
 
 @given(parent=scopes)
@@ -238,8 +245,8 @@ def test_derived_children_narrow_and_never_widen(parent, suffix, keep_pattern, t
     }
     assume(validate_scope_v1(child) is None)
     assert scope_narrows(parent, child)
-    if covers(child, tool, resource):
-        assert covers(parent, tool, resource)
+    if allows(child, tool, resource):
+        assert allows(parent, tool, resource)
 
 
 SMALL = "a.:"
@@ -260,7 +267,7 @@ ALL_SMALL_IDS = ["".join(chars) for length in range(1, 5) for chars in itertools
 @given(parent=small_scopes, child=small_scopes)
 def test_narrowing_never_widens_over_every_small_id(parent, child):
     if scope_narrows(parent, child):
-        widened = [i for i in ALL_SMALL_IDS if covers(child, i, "r") and not covers(parent, i, "r")]
+        widened = [i for i in ALL_SMALL_IDS if allows(child, i, "r") and not allows(parent, i, "r")]
         assert widened == []
 
 
@@ -294,9 +301,9 @@ def test_ordinary_slash_paths_are_accepted(entry):
 
 def test_traversal_id_is_never_covered_even_by_a_matching_prefix():
     scope_with_prefix = scope(["read"], ["env/prod/*"])
-    assert covers(scope_with_prefix, "read", "env/prod/db")
-    assert not covers(scope_with_prefix, "read", "env/prod/../secret")
-    assert not covers(scope(["read"], ["env/*"]), "read", "env/../secret")
+    assert allows(scope_with_prefix, "read", "env/prod/db")
+    assert not allows(scope_with_prefix, "read", "env/prod/../secret")
+    assert not allows(scope(["read"], ["env/*"]), "read", "env/../secret")
 
 
 def test_scope_with_a_traversal_entry_is_invalid():
@@ -306,7 +313,7 @@ def test_scope_with_a_traversal_entry_is_invalid():
 
 def test_ids_are_opaque_percent_escapes_are_not_resolved():
     assert validate_entry("env/%2e%2e/secret") is None
-    assert covers(scope(["read"], ["env/prod/*"]), "read", "env/prod/%2e%2e/secret")
+    assert allows(scope(["read"], ["env/prod/*"]), "read", "env/prod/%2e%2e/secret")
 
 
 def test_scope_version_by_keys():
@@ -702,3 +709,10 @@ def test_v2_narrowing_never_widens_a_call(parent, child, tool, resource, cost):
 @given(parent=v2_scopes)
 def test_v2_scope_narrows_itself(parent):
     assert scope_narrows(parent, parent)
+
+
+def test_covers_is_removed():
+    with pytest.raises(ImportError):
+        from agent_warrant.scope import covers
+
+        assert covers is None
