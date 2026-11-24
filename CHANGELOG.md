@@ -4,6 +4,8 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 ### Scopes, task roots and chains
 
 - Breaking: scopes are lists of permissions, `{"permissions": [{"tools": [...], "resources": [...], "max_cost_per_call": int}, ...]}`. A call is allowed only if one permission covers both its tool and its resource and its cost is within that permission's cap, so tools and resources from different permissions no longer pair. Bounds: 1 to 16 permissions, at most 64 entries in total, non-empty lists, no entry twice in one list, no permission twice. See `docs/spec/grant-chain.md`, Scope.
