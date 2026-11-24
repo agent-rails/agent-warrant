@@ -1145,3 +1145,38 @@ def test_leaf_permissions_follow_the_leaf(world):
     assert world.verify(links).leaf_permissions == links[-1].permissions
     assert world.verify([]).leaf_permissions == world.root.permissions
     assert world.verify(links, holder_key=generate_keypair()).leaf_permissions is None
+
+
+def link_identity(record):
+    return record.binding(), record.signing_bytes(), record.encode(), record.permissions, record.scope_version
+
+
+def test_mutating_a_decoded_link_scope_leaves_its_identity_unchanged(world):
+    link = ChainLink.decode(world.chain(1)[0].encode())
+    original = link.scope
+    before = link_identity(link)
+    link.scope["permissions"][0]["tools"].append("admin")
+    link.scope["permissions"].append({"tools": ["x"], "resources": ["y"], "max_cost_per_call": 9})
+    assert link_identity(link) == before
+    assert link.scope == original
+
+
+def test_a_delegated_link_is_detached_from_the_callers_scope(world):
+    scope = permission_scope(["read"], ["env/*"], 1)
+    link = world.link(world.root, 0, scope=scope)
+    before = link_identity(link)
+    scope["permissions"][0]["resources"].append("payroll")
+    assert link_identity(link) == before
+    assert link.scope == permission_scope(["read"], ["env/*"], 1)
+
+
+def test_mutating_the_verified_leaf_scope_changes_nothing(world):
+    links = world.chain(2)
+    result = world.verify(links)
+    assert result.valid is True
+    permissions = result.leaf_permissions
+    binding = result.links[-1].binding()
+    result.leaf_scope["permissions"][0]["resources"].append("payroll")
+    assert result.leaf_permissions == permissions
+    assert result.links[-1].binding() == binding
+    assert result.leaf_scope == links[-1].scope

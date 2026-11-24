@@ -7,7 +7,7 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
+from .canonical import MAX_SAFE_INTEGER, CanonicalCopy, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable, UnresolvableIssuer
 from .identity import is_valid_public_key
@@ -39,7 +39,8 @@ class TaskRoot:
     signing_input("task-root", version, body), where version is the scope's version: 2
     for a permissions scope, 1 for a v1 scope, so a body cannot be verified under the
     other version's tag. `permissions` and `scope_version` are an immutable view of
-    `scope` computed at construction; `scope` stays the signed dict. Verifying a
+    `scope` computed at construction. `scope` is held as canonical bytes and each read
+    returns a fresh copy, so mutating a value read from it changes nothing. Verifying a
     TaskRoot proves the issuer signed these claims, not that any presenter holds
     `subject`'s key, and not that the issuer may assert them (see trust.py). Strings
     are compared byte for byte: callers must normalise ids before they enter a record."""
@@ -52,7 +53,7 @@ class TaskRoot:
     max_depth: int
     issued_at: int
     expires_at: int
-    scope: dict[str, Any]
+    scope: dict[str, Any] = CanonicalCopy()  # type: ignore[assignment]
     subject: str
     issuer: str
     proof: str

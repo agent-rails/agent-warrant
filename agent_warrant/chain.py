@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .canonical import MAX_SAFE_INTEGER, canonicalize, signing_input, strict_decode
+from .canonical import MAX_SAFE_INTEGER, CanonicalCopy, canonicalize, signing_input, strict_decode
 from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable
 from .identity import decode_public_key, encode_public_key, is_valid_public_key
@@ -58,8 +58,9 @@ class ChainLink:
     position in one task and tenant. `proof` is the issuer's signature over
     signing_input("chain-link", version, body), where version is the scope's version:
     2 for a permissions scope, 1 for a v1 scope. `permissions` and `scope_version` are
-    an immutable view of `scope` computed at construction; `scope` stays the signed
-    dict."""
+    an immutable view of `scope` computed at construction. `scope` is held as canonical
+    bytes and each read returns a fresh copy, so mutating a value read from it changes
+    nothing."""
 
     task_id: str
     tenant_id: str
@@ -67,7 +68,7 @@ class ChainLink:
     parent_hash: str
     issuer: str
     subject: str
-    scope: dict[str, Any]
+    scope: dict[str, Any] = CanonicalCopy()  # type: ignore[assignment]
     budget: int
     depth: int
     issued_at: int

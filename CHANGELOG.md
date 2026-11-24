@@ -13,7 +13,7 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 - Breaking: `scope_narrows` requires each child permission to fit inside one parent permission, with a cap not above that permission's cap. A v1 child under a v2 parent does not narrow.
 - Breaking: `issue_task_root` and `delegate` refuse a v1 scope and sign version 2 records. The record version is taken from the scope shape, so a body under the other version's tag does not verify. v1 roots and links keep their signed bytes and bindings.
 - Breaking: `verify_root`, `check_root` and `verify_chain` take a required keyword-only `scope_v1_cutoff` (Unix seconds, no default). A v1 root issued at or after it is refused with `scope_v1_expired`; 0 refuses every v1 root. v1 scopes are read only and will be removed in a later minor release.
-- `verify_chain` refuses a v1 link under a v2 record (`v1 scope under a v2 scope`). `TaskRoot` and `ChainLink` expose `scope_version` and `permissions`; `ChainVerifyResult.leaf_permissions` is the leaf's view, ready for `check_call`.
+- `verify_chain` refuses a v1 link under a v2 record (`v1 scope under a v2 scope`). `TaskRoot` and `ChainLink` expose `scope_version` and `permissions`; `ChainVerifyResult.leaf_permissions` is the leaf's view, ready for `check_call`. A record's `scope` is held as canonical bytes and each read returns a fresh copy, so mutating it after construction or decode no longer changes the binding or signed bytes.
 - 0.3.0 and earlier refuse v2 records. Upgrade every verifier, with the same `scope_v1_cutoff`, before issuing v2 roots.
 - Opt-in benchmarks: `pytest -m bench` (`tests/test_scope_bench.py`).
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import dataclasses
 import json
 
@@ -599,3 +600,34 @@ def test_replace_recomputes_the_permissions_view(issuer_key):
     assert dataclasses.replace(root, scope=other).permissions == (Permission(("read",), ("r",), 1),)
     with pytest.raises(ValueError, match="scope"):
         dataclasses.replace(root, scope={"grants": []})
+
+
+def identity(record):
+    return record.binding(), record.signing_bytes(), record.encode(), record.permissions, record.scope_version
+
+
+def test_mutating_a_decoded_root_scope_leaves_its_identity_unchanged(issuer_key):
+    root = TaskRoot.decode(make_root(issuer_key).encode())
+    before = identity(root)
+    root.scope["permissions"][0]["tools"].append("admin")
+    root.scope["permissions"].append({"tools": ["x"], "resources": ["y"], "max_cost_per_call": 9})
+    root.scope["tools"] = ["admin"]
+    assert identity(root) == before
+    assert root.scope == SCOPE
+
+
+def test_an_issued_root_is_detached_from_the_callers_scope(issuer_key):
+    scope = copy.deepcopy(SCOPE)
+    root = make_root(issuer_key, scope=scope)
+    before = identity(root)
+    scope["permissions"][0]["resources"].append("payroll")
+    assert identity(root) == before
+    assert root.scope == SCOPE
+
+
+def test_root_scope_reads_are_independent_copies(issuer_key):
+    root = make_root(issuer_key)
+    assert root.scope == root.scope
+    assert root.scope is not root.scope
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        root.scope = {}
