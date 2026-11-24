@@ -35,6 +35,10 @@ packages = ["agent_warrant"]
 [tool.setuptools.package-data]
 agent_warrant = ["py.typed"]
 
+[tool.pytest.ini_options]
+addopts = "-m 'not bench'"
+markers = ["bench: opt-in timing benchmarks, excluded by default; run with -m bench"]
+
 [tool.ruff]
 line-length = 120
 
