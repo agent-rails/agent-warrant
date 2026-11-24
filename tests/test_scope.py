@@ -1,16 +1,38 @@
 from __future__ import annotations
 
+import dataclasses
 import itertools
 
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from agent_warrant.scope import MAX_ENTRIES, covers, scope_narrows, validate_entry, validate_scope
+from agent_warrant.canonical import MAX_SAFE_INTEGER
+from agent_warrant.scope import (
+    MAX_ENTRIES,
+    MAX_PERMISSIONS,
+    MAX_TOTAL_ENTRIES,
+    Permission,
+    covers,
+    permissions_of,
+    scope_narrows,
+    scope_version,
+    validate_entry,
+    validate_scope,
+    validate_scope_v1,
+)
 
 
 def scope(tools=(), resources=(), cost=10):
     return {"tools": list(tools), "resources": list(resources), "max_cost_per_call": cost}
+
+
+def permission(tools=("read",), resources=("r",), cost=10):
+    return {"tools": list(tools), "resources": list(resources), "max_cost_per_call": cost}
+
+
+def scope_v2(*items):
+    return {"permissions": list(items)}
 
 
 @pytest.mark.parametrize(
@@ -59,7 +81,7 @@ def test_prefix_pattern_must_end_at_separator():
     ],
 )
 def test_valid_scopes(value):
-    assert validate_scope(value) is None
+    assert validate_scope_v1(value) is None
 
 
 @pytest.mark.parametrize(
@@ -82,7 +104,7 @@ def test_valid_scopes(value):
     ],
 )
 def test_invalid_scopes(value):
-    assert validate_scope(value) is not None
+    assert validate_scope_v1(value) is not None
 
 
 def test_exact_entry_covers_only_itself():
@@ -211,7 +233,7 @@ def test_derived_children_narrow_and_never_widen(parent, suffix, keep_pattern, t
         "resources": [extend(entry, suffix, keep_pattern) for entry in parent["resources"]],
         "max_cost_per_call": parent["max_cost_per_call"],
     }
-    assume(validate_scope(child) is None)
+    assume(validate_scope_v1(child) is None)
     assert scope_narrows(parent, child)
     if covers(child, tool, resource):
         assert covers(parent, tool, resource)
@@ -275,10 +297,180 @@ def test_traversal_id_is_never_covered_even_by_a_matching_prefix():
 
 
 def test_scope_with_a_traversal_entry_is_invalid():
-    assert validate_scope(scope(["read"], ["env/../secret"])) is not None
+    assert validate_scope_v1(scope(["read"], ["env/../secret"])) is not None
     assert not scope_narrows(scope(["read"], ["env/*"]), scope(["read"], ["env/../secret"]))
 
 
 def test_ids_are_opaque_percent_escapes_are_not_resolved():
     assert validate_entry("env/%2e%2e/secret") is None
     assert covers(scope(["read"], ["env/prod/*"]), "read", "env/prod/%2e%2e/secret")
+
+
+def test_scope_version_by_keys():
+    assert scope_version(scope_v2(permission())) == 2
+    assert scope_version(scope(["a"], ["b"])) == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        [],
+        {},
+        {"permissions": [], "tools": []},
+        {"tools": [], "resources": []},
+        {"grants": []},
+        {"permissions": [], "tools": [], "resources": [], "max_cost_per_call": 1},
+    ],
+)
+def test_scope_version_refuses_unknown_shapes(value):
+    with pytest.raises(ValueError):
+        scope_version(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        scope_v2(permission()),
+        scope_v2(*[permission([f"t{i}"], [f"r{i}"]) for i in range(MAX_PERMISSIONS)]),
+        scope_v2(permission([f"t{i}" for i in range(32)], [f"r{i}" for i in range(32)])),
+        scope_v2(permission(["read"], ["notes/*"]), permission(["read"], ["todo"])),
+        scope_v2(permission(["a", "b"]), permission(["b", "a"])),
+        scope_v2(permission(cost=0)),
+        scope_v2(permission(cost=MAX_SAFE_INTEGER)),
+        scope_v2(permission(["deploy.*"], ["env/*"])),
+    ],
+)
+def test_valid_v2_scopes(value):
+    assert validate_scope(value) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        (None, "scope must be an object"),
+        ([], "scope must be an object"),
+        ({}, "scope keys must be exactly ['permissions']"),
+        (scope(["a"], ["b"]), "scope keys must be exactly ['permissions']"),
+        ({"permissions": [], "extra": 1}, "scope keys must be exactly ['permissions']"),
+        ({"permissions": {}}, "permissions must be a list"),
+        ({"permissions": ()}, "permissions must be a list"),
+        (scope_v2(), "permissions must not be empty"),
+        (
+            scope_v2(*[permission([f"t{i}"], [f"r{i}"]) for i in range(MAX_PERMISSIONS + 1)]),
+            f"permissions has more than {MAX_PERMISSIONS} entries",
+        ),
+        (
+            scope_v2(permission([f"t{i}" for i in range(32)], [f"r{i}" for i in range(33)])),
+            f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total",
+        ),
+        (
+            scope_v2(*[permission([f"t{i}", f"u{i}"], [f"r{i}", f"s{i}", "x"]) for i in range(13)]),
+            f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total",
+        ),
+        (scope_v2(None), "permissions[0]: permission must be an object"),
+        (scope_v2(["read"]), "permissions[0]: permission must be an object"),
+        (scope_v2(permission(), {"tools": ["a"], "resources": ["b"]}), "permissions[1]: permission keys must be"),
+        (scope_v2({**permission(), "extra": 1}), "permissions[0]: permission keys must be"),
+        (scope_v2(permission([], ["r"])), "permissions[0]: tools must not be empty"),
+        (scope_v2(permission(["a"], [])), "permissions[0]: resources must not be empty"),
+        (scope_v2({"tools": "a", "resources": ["r"], "max_cost_per_call": 1}), "permissions[0]: tools must be a list"),
+        (
+            scope_v2({"tools": ["a"], "resources": ("r",), "max_cost_per_call": 1}),
+            "permissions[0]: resources must be a list",
+        ),
+        (scope_v2(permission(["*"])), "permissions[0]: tools: prefix pattern"),
+        (scope_v2(permission(["a"], ["env/../secret"])), "permissions[0]: resources: `.` and `..`"),
+        (scope_v2(permission(["a", "a"])), "permissions[0]: tools has duplicate entries"),
+        (scope_v2(permission(["a"], ["r", "s", "r"])), "permissions[0]: resources has duplicate entries"),
+        (scope_v2(permission(), permission()), "permissions[1]: duplicate permission"),
+        (scope_v2(permission(cost=-1)), "permissions[0]: max_cost_per_call must be an integer"),
+        (scope_v2(permission(cost=MAX_SAFE_INTEGER + 1)), "permissions[0]: max_cost_per_call must be an integer"),
+        (scope_v2(permission(cost=True)), "permissions[0]: max_cost_per_call must be an integer"),
+        (scope_v2(permission(cost=1.0)), "permissions[0]: max_cost_per_call must be an integer"),
+        (scope_v2(permission(cost=None)), "permissions[0]: max_cost_per_call must be an integer"),
+    ],
+)
+def test_invalid_v2_scopes(value, reason):
+    refusal = validate_scope(value)
+    assert refusal is not None
+    assert refusal.startswith(reason)
+
+
+def test_total_entry_bound_counts_tools_and_resources_across_permissions():
+    at_bound = scope_v2(*[permission([f"t{i}", f"u{i}"], [f"r{i}", f"s{i}"]) for i in range(MAX_PERMISSIONS)])
+    assert validate_scope(at_bound) is None
+    over = scope_v2(*[permission([f"t{i}", f"u{i}"], [f"r{i}", f"s{i}"]) for i in range(MAX_PERMISSIONS - 1)])
+    over["permissions"].append(permission(["w", "x", "y", "z"], ["r"]))
+    assert validate_scope(over) == f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total"
+
+
+def test_v1_scope_is_not_a_valid_v2_scope_and_v2_is_not_a_valid_v1_scope():
+    assert validate_scope(scope(["a"], ["b"])) is not None
+    assert validate_scope_v1(scope_v2(permission())) is not None
+
+
+def test_permissions_of_v1_is_one_permission():
+    assert permissions_of(scope(["a", "b.*"], ["r/*"], 7)) == (Permission(("a", "b.*"), ("r/*",), 7),)
+
+
+def test_permissions_of_v1_keeps_empty_lists_and_more_than_64_entries():
+    wide = scope([f"t{i}" for i in range(MAX_ENTRIES)], [f"r{i}" for i in range(MAX_ENTRIES)], 1)
+    (only,) = permissions_of(wide)
+    assert len(only.tools) + len(only.resources) == 2 * MAX_ENTRIES
+    assert permissions_of(scope()) == (Permission((), (), 10),)
+
+
+def test_permissions_of_v2_is_one_permission_per_item_in_order():
+    value = scope_v2(permission(["read"], ["notes/*"], 1), permission(["write"], ["todo"], 2))
+    assert permissions_of(value) == (
+        Permission(("read",), ("notes/*",), 1),
+        Permission(("write",), ("todo",), 2),
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, {}, scope_v2(), scope_v2(permission(["*"])), scope(["*"], ["r"]), {"grants": []}],
+)
+def test_permissions_of_refuses_invalid_scopes(value):
+    with pytest.raises(ValueError):
+        permissions_of(value)
+
+
+def test_permissions_view_is_immutable_and_detached_from_the_raw_dict():
+    raw = scope_v2(permission(["read"], ["notes/*"], 3))
+    view = permissions_of(raw)
+    raw["permissions"][0]["tools"].append("write")
+    raw["permissions"].append(permission(["write"], ["todo"]))
+    assert view == (Permission(("read",), ("notes/*",), 3),)
+    assert isinstance(view, tuple)
+    assert isinstance(view[0].tools, tuple)
+    assert isinstance(view[0].resources, tuple)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        view[0].max_cost_per_call = 99
+
+
+def test_permission_coerces_lists_to_tuples():
+    built = Permission(["read"], ["r"], 1)
+    assert built.tools == ("read",)
+    assert built.resources == ("r",)
+
+
+@pytest.mark.parametrize(
+    ("tools", "resources", "cost", "error"),
+    [
+        ("read", ("r",), 1, TypeError),
+        (("read",), "r", 1, TypeError),
+        (("*",), ("r",), 1, ValueError),
+        (("read",), ("env/../x",), 1, ValueError),
+        (("read",), (5,), 1, ValueError),
+        (("read",), ("r",), -1, ValueError),
+        (("read",), ("r",), MAX_SAFE_INTEGER + 1, ValueError),
+        (("read",), ("r",), True, ValueError),
+        (("read",), ("r",), 1.0, ValueError),
+    ],
+)
+def test_permission_refuses_invalid_fields(tools, resources, cost, error):
+    with pytest.raises(error):
+        Permission(tools, resources, cost)

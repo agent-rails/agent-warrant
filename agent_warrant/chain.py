@@ -12,7 +12,7 @@ from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable
 from .identity import decode_public_key, encode_public_key, is_valid_public_key
 from .resolver import IssuerResolver
-from .scope import scope_narrows, validate_scope
+from .scope import scope_narrows, validate_scope_v1
 from .task_root import (
     CLOCK_SKEW_SECONDS,
     MAX_CHAIN_DEPTH,
@@ -117,7 +117,7 @@ def _validate_link_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
-    scope_refusal = validate_scope(fields["scope"])
+    scope_refusal = validate_scope_v1(fields["scope"])
     if scope_refusal:
         raise ValueError(f"scope: {scope_refusal}")
     if not 1 <= fields["depth"] <= MAX_CHAIN_DEPTH:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .canonical import MAX_SAFE_INTEGER
@@ -7,7 +8,10 @@ from .canonical import MAX_SAFE_INTEGER
 SEPARATORS = ".:/_-"
 MAX_ID_CHARACTERS = 128
 MAX_ENTRIES = 64
+MAX_PERMISSIONS = 16
+MAX_TOTAL_ENTRIES = 64
 _SCOPE_KEYS = frozenset({"tools", "resources", "max_cost_per_call"})
+_SCOPE_V2_KEYS = frozenset({"permissions"})
 
 
 def validate_entry(entry: Any) -> str | None:
@@ -42,9 +46,10 @@ def validate_entry(entry: Any) -> str | None:
     return None
 
 
-def validate_scope(scope: Any) -> str | None:
-    """Return why `scope` is not a valid scope, or None if it is. The shape is exactly
-    {"tools": [...], "resources": [...], "max_cost_per_call": int}."""
+def validate_scope_v1(scope: Any) -> str | None:
+    """Return why `scope` is not a valid v1 scope, or None if it is. The shape is exactly
+    {"tools": [...], "resources": [...], "max_cost_per_call": int}. v1 is read only: new
+    records carry v2 scopes (see validate_scope)."""
     if not isinstance(scope, dict):
         return "scope must be an object"
     if set(scope) != _SCOPE_KEYS:
@@ -59,10 +64,112 @@ def validate_scope(scope: Any) -> str | None:
             reason = validate_entry(entry)
             if reason:
                 return f"{name}: {reason}"
-    cost = scope["max_cost_per_call"]
+    return _cost_refusal(scope["max_cost_per_call"])
+
+
+def _cost_refusal(cost: Any) -> str | None:
     if isinstance(cost, bool) or not isinstance(cost, int) or not 0 <= cost <= MAX_SAFE_INTEGER:
         return f"max_cost_per_call must be an integer between 0 and {MAX_SAFE_INTEGER}"
     return None
+
+
+def _permission_refusal(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return "permission must be an object"
+    if set(item) != _SCOPE_KEYS:
+        return f"permission keys must be exactly {sorted(_SCOPE_KEYS)}"
+    for name in ("tools", "resources"):
+        entries = item[name]
+        if not isinstance(entries, list):
+            return f"{name} must be a list"
+        if not entries:
+            return f"{name} must not be empty"
+        for entry in entries:
+            reason = validate_entry(entry)
+            if reason:
+                return f"{name}: {reason}"
+        if len(set(entries)) != len(entries):
+            return f"{name} has duplicate entries"
+    return _cost_refusal(item["max_cost_per_call"])
+
+
+def validate_scope(scope: Any) -> str | None:
+    """Return why `scope` is not a valid v2 scope, or None if it is. The shape is exactly
+    {"permissions": [{"tools": [...], "resources": [...], "max_cost_per_call": int}, ...]}:
+    1 to 16 permissions, each with non-empty lists of valid entries and no entry twice in
+    one list, at most 64 tool and resource entries in total, and no permission twice."""
+    if not isinstance(scope, dict):
+        return "scope must be an object"
+    if set(scope) != _SCOPE_V2_KEYS:
+        return f"scope keys must be exactly {sorted(_SCOPE_V2_KEYS)}"
+    items = scope["permissions"]
+    if not isinstance(items, list):
+        return "permissions must be a list"
+    if not items:
+        return "permissions must not be empty"
+    if len(items) > MAX_PERMISSIONS:
+        return f"permissions has more than {MAX_PERMISSIONS} entries"
+    total = 0
+    for position, item in enumerate(items):
+        reason = _permission_refusal(item)
+        if reason:
+            return f"permissions[{position}]: {reason}"
+        if item in items[:position]:
+            return f"permissions[{position}]: duplicate permission"
+        total += len(item["tools"]) + len(item["resources"])
+        if total > MAX_TOTAL_ENTRIES:
+            return f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total"
+    return None
+
+
+def scope_version(scope: Any) -> int:
+    """Return 2 for a {"permissions": [...]} scope and 1 for a v1 scope, judged by its
+    keys only. Any other shape raises ValueError. Does not validate the contents."""
+    if isinstance(scope, dict):
+        keys = set(scope)
+        if keys == _SCOPE_V2_KEYS:
+            return 2
+        if keys == _SCOPE_KEYS:
+            return 1
+    raise ValueError("scope is neither a v1 nor a v2 scope")
+
+
+@dataclass(frozen=True)
+class Permission:
+    """One permission: every listed tool on every listed resource, at most
+    `max_cost_per_call` per call. Built from a validated scope by permissions_of; the
+    fields are tuples, so the view cannot change after it is built. A permission from a
+    v1 scope may have empty lists or more than 64 entries."""
+
+    tools: tuple[str, ...]
+    resources: tuple[str, ...]
+    max_cost_per_call: int
+
+    def __post_init__(self) -> None:
+        for name in ("tools", "resources"):
+            entries = getattr(self, name)
+            if isinstance(entries, str):
+                raise TypeError(f"{name} must be a sequence of entries, not a string")
+            entries = tuple(entries)
+            for entry in entries:
+                reason = validate_entry(entry)
+                if reason:
+                    raise ValueError(f"{name}: {reason}")
+            object.__setattr__(self, name, entries)
+        reason = _cost_refusal(self.max_cost_per_call)
+        if reason:
+            raise ValueError(reason)
+
+
+def permissions_of(scope: Any) -> tuple[Permission, ...]:
+    """The validated, immutable view of a v1 or v2 scope: one Permission per v2 item, or
+    exactly one for a v1 scope. An invalid scope raises ValueError."""
+    version = scope_version(scope)
+    reason = validate_scope(scope) if version == 2 else validate_scope_v1(scope)
+    if reason:
+        raise ValueError(reason)
+    items = scope["permissions"] if version == 2 else [scope]
+    return tuple(Permission(item["tools"], item["resources"], item["max_cost_per_call"]) for item in items)
 
 
 def _entry_covers(pattern: str, value: str) -> bool:
@@ -86,7 +193,7 @@ def covers(scope: dict[str, Any], tool: str, resource: str) -> bool:
     anything else, or an invalid scope, is not covered. Cost is checked separately
     against `max_cost_per_call`. This is the only matcher: enforcement and narrowing
     both reduce to it."""
-    if validate_scope(scope):
+    if validate_scope_v1(scope):
         return False
     for value in (tool, resource):
         if validate_entry(value) or "*" in value:
@@ -99,7 +206,7 @@ def scope_narrows(parent: dict[str, Any], child: dict[str, Any]) -> bool:
     inside some parent entry: an exact id by the same id or a covering prefix, a prefix
     pattern only by a prefix pattern whose prefix it extends. Cost may not rise. An
     invalid scope on either side is not narrowing."""
-    if validate_scope(parent) or validate_scope(child):
+    if validate_scope_v1(parent) or validate_scope_v1(child):
         return False
     if child["max_cost_per_call"] > parent["max_cost_per_call"]:
         return False

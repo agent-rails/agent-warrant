@@ -14,7 +14,7 @@ from .identity import is_valid_public_key
 from .issuer import MAX_TTL_SECONDS
 from .resolver import IssuerResolver
 from .revocation import RevocationChecker
-from .scope import validate_scope
+from .scope import validate_scope_v1
 from .trust import IssuerTrustPolicy
 
 RECORD_TYPE = "task-root"
@@ -95,7 +95,7 @@ def _validate_fields(fields: dict[str, Any]) -> None:
             raise ValueError(f"{name} must be an integer")
         if not 0 <= value <= MAX_SAFE_INTEGER:
             raise ValueError(f"{name} must be between 0 and {MAX_SAFE_INTEGER}")
-    scope_refusal = validate_scope(fields["scope"])
+    scope_refusal = validate_scope_v1(fields["scope"])
     if scope_refusal:
         raise ValueError(f"scope: {scope_refusal}")
     if fields["max_depth"] > MAX_CHAIN_DEPTH:
