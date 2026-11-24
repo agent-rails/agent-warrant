@@ -170,6 +170,17 @@ class Permission:
     def _matches(self, tool: str, resource: str) -> bool:
         return _covered_by_any(self.tools, tool) and _covered_by_any(self.resources, resource)
 
+    def contains(self, child: Permission) -> bool:
+        """True if `child` allows nothing this permission does not: every child tool and
+        resource lies inside one of this permission's tools or resources (an exact id by
+        the same id or a covering prefix, a prefix pattern only by a prefix pattern whose
+        prefix it extends) and the child cap is not above this cap."""
+        if child.max_cost_per_call > self.max_cost_per_call:
+            return False
+        return all(any(_entry_narrows(own, entry) for own in self.tools) for entry in child.tools) and all(
+            any(_entry_narrows(own, entry) for own in self.resources) for entry in child.resources
+        )
+
 
 def permissions_of(scope: Any) -> tuple[Permission, ...]:
     """The validated, immutable view of a v1 or v2 scope: one Permission per v2 item, or
@@ -247,17 +258,21 @@ def covers(scope: dict[str, Any], tool: str, resource: str) -> bool:
     return _covered_by_any(scope["tools"], tool) and _covered_by_any(scope["resources"], resource)
 
 
-def scope_narrows(parent: dict[str, Any], child: dict[str, Any]) -> bool:
-    """True if `child` allows nothing that `parent` does not. Every child entry must be
-    inside some parent entry: an exact id by the same id or a covering prefix, a prefix
-    pattern only by a prefix pattern whose prefix it extends. Cost may not rise. An
-    invalid scope on either side is not narrowing."""
-    if validate_scope_v1(parent) or validate_scope_v1(child):
+def _narrows(parent: tuple[Permission, ...], child: tuple[Permission, ...]) -> bool:
+    return all(any(own.contains(item) for own in parent) for item in child)
+
+
+def scope_narrows(parent: Any, child: Any) -> bool:
+    """True if `child` allows nothing that `parent` does not: every child permission is
+    contained by one parent permission (Permission.contains), so tools and resources from
+    different parent permissions never combine and each child cap fits the parent
+    permission that contains it. A v1 scope is one permission. A v1 child under a v2
+    parent, or an invalid scope on either side, is not narrowing."""
+    try:
+        parent_permissions = permissions_of(parent)
+        child_permissions = permissions_of(child)
+    except ValueError:
         return False
-    if child["max_cost_per_call"] > parent["max_cost_per_call"]:
+    if scope_version(parent) == 2 and scope_version(child) == 1:
         return False
-    for name in ("tools", "resources"):
-        for entry in child[name]:
-            if not any(_entry_narrows(candidate, entry) for candidate in parent[name]):
-                return False
-    return True
+    return _narrows(parent_permissions, child_permissions)

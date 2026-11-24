@@ -610,3 +610,95 @@ def test_permission_from_v1_with_empty_lists_covers_nothing():
 )
 def test_entry_covers_matches_patterns_without_validating(pattern, value, expected):
     assert entry_covers(pattern, value) is expected
+
+
+TWO_PAIRS = scope_v2(permission(["read"], ["notes/*"], 5), permission(["write"], ["todo"], 2))
+
+
+def test_v2_child_inside_one_parent_permission_narrows():
+    assert scope_narrows(TWO_PAIRS, TWO_PAIRS)
+    assert scope_narrows(TWO_PAIRS, scope_v2(permission(["read"], ["notes/a", "notes/b/*"], 5)))
+    assert scope_narrows(TWO_PAIRS, scope_v2(permission(["write"], ["todo"], 0)))
+    assert scope_narrows(TWO_PAIRS, scope_v2(permission(["write"], ["todo"], 1), permission(["read"], ["notes/a"], 3)))
+
+
+def test_v2_child_mixing_two_parent_permissions_is_refused():
+    assert not scope_narrows(TWO_PAIRS, scope_v2(permission(["read", "write"], ["todo"], 1)))
+    assert not scope_narrows(TWO_PAIRS, scope_v2(permission(["write"], ["notes/a"], 1)))
+    assert not scope_narrows(TWO_PAIRS, scope_v2(permission(["read"], ["notes/a", "todo"], 1)))
+
+
+def test_split_parent_pairs_cannot_be_merged_even_when_every_pair_is_allowed():
+    parent = scope_v2(permission(["read"], ["todo"], 1), permission(["read"], ["payroll"], 1))
+    assert not scope_narrows(parent, scope_v2(permission(["read"], ["todo", "payroll"], 1)))
+    assert scope_narrows(parent, scope_v2(permission(["read"], ["payroll"], 1), permission(["read"], ["todo"], 1)))
+
+
+def test_v2_child_cap_must_fit_the_containing_parent_permission():
+    assert not scope_narrows(TWO_PAIRS, scope_v2(permission(["write"], ["todo"], 3)))
+    assert not scope_narrows(TWO_PAIRS, scope_v2(permission(["read"], ["notes/a"], 6)))
+
+
+def test_child_cap_cannot_borrow_a_higher_cap_from_another_parent_permission():
+    parent = scope_v2(permission(["read"], ["cheap"], 1), permission(["read", "write"], ["costly"], 9))
+    assert not scope_narrows(parent, scope_v2(permission(["read"], ["cheap"], 9)))
+    assert scope_narrows(parent, scope_v2(permission(["read"], ["costly"], 9)))
+
+
+def test_v1_child_under_v2_parent_is_refused():
+    assert not scope_narrows(TWO_PAIRS, scope(["read"], ["notes/a"], 1))
+    assert not scope_narrows(TWO_PAIRS, scope([], [], 0))
+
+
+def test_v2_child_under_v1_parent_narrows_inside_the_single_permission():
+    parent = scope(["read", "write"], ["notes/*", "todo"], 5)
+    assert scope_narrows(parent, TWO_PAIRS)
+    assert not scope_narrows(parent, scope_v2(permission(["delete"], ["todo"], 1)))
+    assert not scope_narrows(parent, scope_v2(permission(["read"], ["todo"], 6)))
+
+
+@pytest.mark.parametrize(
+    ("parent", "child"),
+    [
+        (TWO_PAIRS, scope_v2()),
+        (TWO_PAIRS, scope_v2(permission(["read"], ["notes/a"]), permission(["read"], ["notes/a"]))),
+        (scope_v2(), scope_v2(permission())),
+        (TWO_PAIRS, {"grants": []}),
+        ({"grants": []}, TWO_PAIRS),
+        (TWO_PAIRS, {**TWO_PAIRS, "tools": []}),
+    ],
+)
+def test_invalid_or_unknown_shapes_do_not_narrow(parent, child):
+    assert not scope_narrows(parent, child)
+
+
+def test_permission_contains():
+    parent = Permission(("read", "deploy.*"), ("env/*",), 5)
+    assert parent.contains(Permission(("deploy.prod.*",), ("env/eu",), 5))
+    assert parent.contains(Permission((), (), 0))
+    assert not parent.contains(Permission(("write",), ("env/eu",), 1))
+    assert not parent.contains(Permission(("read",), ("envx",), 1))
+    assert not parent.contains(Permission(("read",), ("env/eu",), 6))
+    assert not Permission(("deploy.prod",), ("r",), 1).contains(Permission(("deploy.*",), ("r",), 1))
+
+
+v2_permissions = st.builds(
+    lambda tools, resources, cost: {"tools": tools, "resources": resources, "max_cost_per_call": cost},
+    st.lists(entries, min_size=1, max_size=3, unique=True),
+    st.lists(entries, min_size=1, max_size=3, unique=True),
+    st.integers(min_value=0, max_value=10),
+)
+v2_scopes = st.builds(
+    lambda items: {"permissions": items}, st.lists(v2_permissions, min_size=1, max_size=3, unique_by=str)
+)
+
+
+@given(parent=v2_scopes, child=v2_scopes, tool=concrete_ids, resource=concrete_ids, cost=st.integers(0, 10))
+def test_v2_narrowing_never_widens_a_call(parent, child, tool, resource, cost):
+    if scope_narrows(parent, child) and check_call(permissions_of(child), tool, resource, cost) is None:
+        assert check_call(permissions_of(parent), tool, resource, cost) is None
+
+
+@given(parent=v2_scopes)
+def test_v2_scope_narrows_itself(parent):
+    assert scope_narrows(parent, parent)
