@@ -157,7 +157,11 @@ Record type `chain-link`, version 2 for a permissions scope and 1 for a v1 scope
   5. revocation, once, with a `ChainContext`
 - Reordered, duplicated or skipped links fail the `parent_hash`/`issuer`/`depth` checks. A link from another task or tenant fails the `task_id`/`tenant_id` check; a link under a different root with the same task and tenant fails the `task_root` check.
 - A TaskRoot alone never yields a valid chain: the proof must be signed by the leaf subject's key, and links must be signed by the previous subject's key. A captured chain and proof is useless to another verifier or for another request.
-- `valid=True` means the chain is authentic and narrowing, inside its validity window, not revoked, and the presenter holds the leaf key now. `leaf_scope`, `leaf_permissions` and `leaf_subject` expose the leaf's authority; applying it (`check_call(result.leaf_permissions, tool, resource, cost)`) and charging budget are the caller's job. All three are `None` on an invalid result.
+- `valid=True` means the chain is authentic and narrowing, inside its validity window, not revoked, and the presenter holds the leaf key now. It authenticates the chain only; it does not authorize any call. `leaf_scope`, `leaf_permissions` and `leaf_subject` expose the leaf's authority. All three are `None` on an invalid result.
+- After a valid result, the executor must, before performing the effect:
+  1. call `check_call(result.leaf_permissions, tool, resource, cost)` with the tool, resource and cost of the actual request, the one whose digest was passed as `expected_request_digest`, and refuse unless it returns `None`;
+  2. reserve the cost against the task budget and every link's budget atomically, as `TaskLedger.reserve` does in one transaction, so concurrent requests cannot together overspend;
+  3. enforce single use: the same chain and proof verify again for the same request until `max_proof_age_seconds` passes, so the effect must be keyed to happen once, as `Operation.op_id` is in the ledger.
 - Only the root is subject to the v1 cutoff. A v1 link can only sit under a v1 root, so it ends with that root.
 
 ## Chain revocation
