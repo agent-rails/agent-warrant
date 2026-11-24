@@ -75,15 +75,20 @@ def _cost_refusal(cost: Any) -> str | None:
     return None
 
 
-def _permission_refusal(item: Any) -> str | None:
+def _permission_shape_refusal(item: Any) -> str | None:
     if not isinstance(item, dict):
         return "permission must be an object"
     if set(item) != _SCOPE_KEYS:
         return f"permission keys must be exactly {sorted(_SCOPE_KEYS)}"
     for name in ("tools", "resources"):
-        entries = item[name]
-        if not isinstance(entries, list):
+        if not isinstance(item[name], list):
             return f"{name} must be a list"
+    return None
+
+
+def _permission_entries_refusal(item: dict[str, Any]) -> str | None:
+    for name in ("tools", "resources"):
+        entries = item[name]
         if not entries:
             return f"{name} must not be empty"
         for entry in entries:
@@ -113,14 +118,17 @@ def validate_scope(scope: Any) -> str | None:
         return f"permissions has more than {MAX_PERMISSIONS} entries"
     total = 0
     for position, item in enumerate(items):
-        reason = _permission_refusal(item)
+        reason = _permission_shape_refusal(item)
+        if reason:
+            return f"permissions[{position}]: {reason}"
+        total += len(item["tools"]) + len(item["resources"])
+        if total > MAX_TOTAL_ENTRIES:
+            return f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total"
+        reason = _permission_entries_refusal(item)
         if reason:
             return f"permissions[{position}]: {reason}"
         if item in items[:position]:
             return f"permissions[{position}]: duplicate permission"
-        total += len(item["tools"]) + len(item["resources"])
-        if total > MAX_TOTAL_ENTRIES:
-            return f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total"
     return None
 
 
@@ -143,7 +151,8 @@ class Permission:
     """One permission: every listed tool on every listed resource, at most
     `max_cost_per_call` per call. Built from a validated scope by permissions_of; the
     fields are tuples, so the view cannot change after it is built. A permission from a
-    v1 scope may have empty lists or more than 64 entries."""
+    v1 scope may have empty lists and up to 64 entries in each list, more than 64 in
+    total."""
 
     tools: tuple[str, ...]
     resources: tuple[str, ...]
@@ -155,6 +164,8 @@ class Permission:
             if isinstance(entries, str):
                 raise TypeError(f"{name} must be a sequence of entries, not a string")
             entries = tuple(entries)
+            if len(entries) > MAX_ENTRIES:
+                raise ValueError(f"{name} has more than {MAX_ENTRIES} entries")
             for entry in entries:
                 reason = validate_entry(entry)
                 if reason:

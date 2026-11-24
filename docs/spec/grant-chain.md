@@ -67,7 +67,7 @@ Record type `task-root`, version 2 for a permissions scope and 1 for a v1 scope 
 
 v2 shape is exactly `{"permissions": [{"tools": [...], "resources": [...], "max_cost_per_call": int}, ...]}` (`validate_scope`).
 
-- 1 to 16 permissions; at most 64 tool and resource entries in total across them.
+- 1 to 16 permissions; at most 64 tool and resource entries in total across them. Counts are checked before any entry is validated, and a `Permission` refuses more than 64 entries in a list.
 - Each permission allows every listed tool on every listed resource, at most `max_cost_per_call` (integer 0 to 2**53-1) per call. Pairing is per permission: a tool from one permission is never allowed on a resource from another.
 - `tools` and `resources` are non-empty. An entry may not appear twice in one list (exact string equality); the same entry may appear in different permissions. Two equal permissions are refused.
 - Order is not semantic but is signed: reordering permissions or entries yields a valid record with a different binding, which needs its own revocation.

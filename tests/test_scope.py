@@ -7,6 +7,7 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
+from agent_warrant import scope as scope_module
 from agent_warrant.canonical import MAX_SAFE_INTEGER
 from agent_warrant.scope import (
     MAX_ENTRIES,
@@ -802,3 +803,45 @@ def test_validate_scope_refuses_subclassed_entries_and_caps(value):
 
 def test_validate_entry_refuses_a_str_subclass():
     assert validate_entry(MatchesAnything("read")) == "entry must be a non-empty string"
+
+
+@pytest.fixture
+def entry_checks(monkeypatch):
+    calls = []
+    original = scope_module.validate_entry
+
+    def counting(entry):
+        calls.append(entry)
+        return original(entry)
+
+    monkeypatch.setattr(scope_module, "validate_entry", counting)
+    return calls
+
+
+def test_validate_scope_refuses_an_oversized_list_before_checking_entries(entry_checks):
+    huge = scope_v2(permission(tools=["read"] * 200_000))
+    assert validate_scope(huge) == f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total"
+    assert entry_checks == []
+
+
+def test_validate_scope_refuses_the_running_total_before_checking_the_next_entries(entry_checks):
+    first = permission(tools=[f"t{index}" for index in range(40)], resources=["r"])
+    second = permission(tools=[f"u{index}" for index in range(40)], resources=["r"])
+    assert validate_scope(scope_v2(first, second)) == (
+        f"permissions have more than {MAX_TOTAL_ENTRIES} tool and resource entries in total"
+    )
+    assert len(entry_checks) == 41
+
+
+@pytest.mark.parametrize("name", ["tools", "resources"])
+def test_permission_refuses_more_than_64_entries_before_checking_them(entry_checks, name):
+    lists = {"tools": ("read",), "resources": ("r",)}
+    lists[name] = ("x",) * 200_000
+    with pytest.raises(ValueError, match=f"{name} has more than {MAX_ENTRIES} entries"):
+        Permission(lists["tools"], lists["resources"], 1)
+    assert len(entry_checks) <= 1
+
+
+def test_permission_allows_64_entries_per_list():
+    built = Permission(tuple(f"t{index}" for index in range(MAX_ENTRIES)), ("r",), 1)
+    assert len(built.tools) == MAX_ENTRIES
