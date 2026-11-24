@@ -12,7 +12,7 @@ from .encoding import b64u, b64u_decode, sha256_b64u, unpack
 from .exceptions import RevocationSourceUnreachable
 from .identity import decode_public_key, encode_public_key, is_valid_public_key
 from .resolver import IssuerResolver
-from .scope import Permission, _narrows, permissions_of, scope_version
+from .scope import Permission, permissions_narrow, permissions_of, scope_version
 from .task_root import (
     CLOCK_SKEW_SECONDS,
     MAX_CHAIN_DEPTH,
@@ -182,7 +182,7 @@ def delegate(
     permissions = _permissions(scope)
     if scope_version(scope) != LINK_VERSION:
         raise ValueError("scope: a v1 scope cannot be delegated, use permissions")
-    if not _narrows(parent.permissions, permissions):
+    if not permissions_narrow(parent.permissions, permissions):
         raise ValueError("scope does not narrow the parent's scope")
     if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= parent.budget:
         raise ValueError(f"budget must be an integer between 0 and the parent's budget {parent.budget}")
@@ -475,7 +475,7 @@ def _check_link(
         return "invalid signature"
     if previous.scope_version == 2 and link.scope_version == 1:
         return "v1 scope under a v2 scope"
-    if not _narrows(previous.permissions, link.permissions):
+    if not permissions_narrow(previous.permissions, link.permissions):
         return "scope does not narrow the previous scope"
     if link.budget > previous.budget:
         return "budget exceeds the previous budget"

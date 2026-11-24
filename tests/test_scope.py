@@ -17,6 +17,7 @@ from agent_warrant.scope import (
     Permission,
     check_call,
     entry_covers,
+    permissions_narrow,
     permissions_of,
     scope_narrows,
     scope_version,
@@ -878,3 +879,26 @@ def test_validate_scope_allows_permissions_differing_only_in_cap():
         validate_scope(scope_v2(permission(tools=["read", "write"]), permission(tools=["write", "read"], cost=3)))
         is None
     )
+
+
+def test_permissions_narrow_requires_each_child_permission_inside_one_parent_permission():
+    parent = (Permission(("read.*",), ("env/*",), 10), Permission(("admin",), ("payroll",), 1))
+    assert permissions_narrow(parent, (Permission(("read.x",), ("env/a",), 10),)) is True
+    assert permissions_narrow(parent, (Permission(("admin",), ("payroll",), 1),)) is True
+    assert permissions_narrow(parent, ()) is True
+    assert permissions_narrow(parent, (Permission(("read.x",), ("payroll",), 1),)) is False
+    assert permissions_narrow(parent, (Permission(("admin",), ("payroll",), 2),)) is False
+
+
+@pytest.mark.parametrize(
+    ("parent", "child"),
+    [
+        ([Permission(("read",), ("r",), 1)], (Permission(("read",), ("r",), 1),)),
+        ((Permission(("read",), ("r",), 1),), [Permission(("read",), ("r",), 1)]),
+        (({"tools": ["read"], "resources": ["r"], "max_cost_per_call": 1},), ()),
+        ((), ("read",)),
+    ],
+)
+def test_permissions_narrow_refuses_anything_but_tuples_of_permission(parent, child):
+    with pytest.raises(TypeError, match="must be a tuple of Permission"):
+        permissions_narrow(parent, child)

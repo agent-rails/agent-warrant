@@ -237,6 +237,11 @@ def _covered_by_any(entries: tuple[str, ...], value: str) -> bool:
     return any(entry_covers(pattern, value) for pattern in entries)
 
 
+def _require_permissions(value: Any, name: str) -> None:
+    if type(value) is not tuple or not all(type(item) is Permission for item in value):
+        raise TypeError(f"{name} must be a tuple of Permission")
+
+
 def _is_concrete(value: Any) -> bool:
     return type(value) is str and validate_entry(value) is None and "*" not in value
 
@@ -249,8 +254,7 @@ def check_call(permissions: tuple[Permission, ...], tool: str, resource: str, co
     permission covers the pair but none allows `cost`. Ids, cost and permissions must be
     exactly str, int and Permission, never subclasses. A cost that is not an integer from
     0 to MAX_SAFE_INTEGER raises."""
-    if type(permissions) is not tuple or not all(type(item) is Permission for item in permissions):
-        raise TypeError("permissions must be a tuple of Permission")
+    _require_permissions(permissions, "permissions")
     if type(cost) is not int:
         raise TypeError("cost must be an integer")
     if not 0 <= cost <= MAX_SAFE_INTEGER:
@@ -266,7 +270,14 @@ def check_call(permissions: tuple[Permission, ...], tool: str, resource: str, co
     return CallRefusal.COST_OVER_CALL_CAP if covered else CallRefusal.OUT_OF_SCOPE
 
 
-def _narrows(parent: tuple[Permission, ...], child: tuple[Permission, ...]) -> bool:
+def permissions_narrow(parent: tuple[Permission, ...], child: tuple[Permission, ...]) -> bool:
+    """True if every permission in `child` is contained by one permission in `parent`
+    (Permission.contains), so tools and resources from different parent permissions never
+    combine. Both must be exactly a tuple of Permission, as `.permissions` and
+    permissions_of return; anything else raises TypeError. This is the narrowing rule
+    delegate and verify_chain apply to records; scope_narrows applies it to raw scopes."""
+    _require_permissions(parent, "parent")
+    _require_permissions(child, "child")
     return all(any(own.contains(item) for own in parent) for item in child)
 
 
@@ -283,4 +294,4 @@ def scope_narrows(parent: Any, child: Any) -> bool:
         return False
     if scope_version(parent) == 2 and scope_version(child) == 1:
         return False
-    return _narrows(parent_permissions, child_permissions)
+    return permissions_narrow(parent_permissions, child_permissions)
