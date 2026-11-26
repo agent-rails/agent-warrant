@@ -483,6 +483,9 @@ def test_malformed_ids_are_value_errors(writer, path, writer_uid, group):
         TaskLedger.open_read_only(path, writer_uid, group)
 
 
+SQLITE_READONLY = 8
+
+
 def wal_index_race(code=ledger_module.SQLITE_READONLY_RECOVERY):
     err = sqlite3.OperationalError("attempt to write a readonly database")
     if code is not None:
@@ -546,7 +549,7 @@ def test_a_failing_revocation_read_still_raises_revocation_source_unreachable(re
     "error",
     [
         wal_index_race(code=None),
-        wal_index_race(code=sqlite3.SQLITE_READONLY),
+        wal_index_race(code=SQLITE_READONLY),
         sqlite3.DatabaseError("database disk image is malformed"),
     ],
     ids=["no-error-code", "plain-readonly", "malformed"],
