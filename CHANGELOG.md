@@ -4,6 +4,10 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Ledger
+
+- `ReadOnlyLedger` retries a read that fails with `SQLITE_READONLY_RECOVERY`, after 1, 2, 4, 8 and 16 ms (`READ_RECOVERY_DELAYS_SECONDS`), then raises `LedgerUnavailable` as before. A reader with a read-only `-shm` gets this error now and then while the writer commits: 3 times in 3.77 million reads against about 100,000 commits, and each of those reads succeeded when repeated. Before this change each one surfaced as `LedgerUnavailable`, or as `RevocationSourceUnreachable` from `is_revoked`. Other errors are not retried. On Python 3.10, which does not expose SQLite error codes, nothing is retried.
+
 ## [0.4.0] - 2026-11-24
 
 ### Scopes, task roots and chains

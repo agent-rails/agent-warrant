@@ -5,11 +5,12 @@ import sqlite3
 import stat
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, TypeVar
 from urllib.parse import quote
 
 from .canonical import MAX_SAFE_INTEGER, signing_input
@@ -26,6 +27,10 @@ STATES = ("reserved", "issued", "done", "outcome_unknown", "released")
 BUSY_TIMEOUT_SECONDS = 30
 SIDECAR_SUFFIXES = ("-wal", "-shm")
 NOT_A_DATABASE = "ledger file is not a SQLite database"
+SQLITE_READONLY_RECOVERY = 264
+READ_RECOVERY_DELAYS_SECONDS = (0.001, 0.002, 0.004, 0.008, 0.016)
+
+_T = TypeVar("_T")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -869,6 +874,12 @@ class TaskLedger(_LedgerFile):
             return None if row is None else BudgetStatus(budget=row[0], spent=row[1])
 
 
+def _is_wal_index_race(err: Exception) -> bool:
+    if not isinstance(err, sqlite3.OperationalError):
+        return False
+    return getattr(err, "sqlite_errorcode", None) == SQLITE_READONLY_RECOVERY
+
+
 def _authorize_read(
     action: int, first: str | None, second: str | None, database: str | None, source: str | None
 ) -> int:
@@ -903,7 +914,13 @@ class ReadOnlyLedger(_LedgerFile):
     The database is in WAL mode, so a reader that cannot write the directory needs the
     `-wal` and `-shm` files to exist and be readable: the writer must hold the database
     open. Otherwise every call raises LedgerUnavailable. Mutating methods raise
-    LedgerUnavailable."""
+    LedgerUnavailable.
+
+    With a read-only `-shm`, a read while the writer commits can fail with
+    SQLITE_READONLY_RECOVERY and succeed when repeated. That read is retried after
+    each of READ_RECOVERY_DELAYS_SECONDS; any other error, or the same error after
+    the last delay, raises LedgerUnavailable. Python 3.10 does not expose the SQLite
+    error code, so there it is not retried."""
 
     _URI_MODE = "ro"
 
@@ -916,8 +933,7 @@ class ReadOnlyLedger(_LedgerFile):
         )
         self._attach(Path(os.path.abspath(path)), policy)
         try:
-            with self._read() as connection:
-                version = connection.execute("PRAGMA user_version").fetchone()[0]
+            version = self._query(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
         except BaseException:
             self.close()
             raise
@@ -939,23 +955,28 @@ class ReadOnlyLedger(_LedgerFile):
             connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
         connection.set_authorizer(_authorize_read)
 
-    @contextmanager
-    def _read(self) -> Iterator[sqlite3.Connection]:
+    def _query(self, read: Callable[[sqlite3.Connection], _T]) -> _T:
+        delays = iter(READ_RECOVERY_DELAYS_SECONDS)
         with self._lock:
-            try:
-                yield self._live_connection()
-            except LedgerUnavailable:
-                raise
-            except Exception as err:
-                raise LedgerUnavailable(f"ledger error: {err}") from err
+            while True:
+                try:
+                    return read(self._live_connection())
+                except LedgerUnavailable:
+                    raise
+                except Exception as err:
+                    delay = next(delays, None) if _is_wal_index_race(err) else None
+                    if delay is None:
+                        raise LedgerUnavailable(f"ledger error: {err}") from err
+                time.sleep(delay)
 
     def is_revoked(self, context: ChainContext) -> bool:
         """ChainRevocationChecker: True if the root, any link, the task or the tenant
         is revoked. A database failure raises RevocationSourceUnreachable."""
         bindings = (context.task_root, *context.link_bindings)
         try:
-            with self._read() as connection:
-                return TaskLedger._revoked(connection, context.tenant_id, context.task_id, bindings)
+            return self._query(
+                lambda connection: TaskLedger._revoked(connection, context.tenant_id, context.task_id, bindings)
+            )
         except Exception as err:
             raise RevocationSourceUnreachable(f"ledger database error: {err}") from err
 
@@ -965,8 +986,7 @@ class ReadOnlyLedger(_LedgerFile):
         _check_id("tenant_id", tenant_id)
         _check_id("task_id", task_id)
         _check_id("op_id", op_id)
-        with self._read() as connection:
-            return TaskLedger._read_reservation(connection, tenant_id, task_id, op_id)
+        return self._query(lambda connection: TaskLedger._read_reservation(connection, tenant_id, task_id, op_id))
 
     open_task = _read_only("open_task")
     revoke = _read_only("revoke")
