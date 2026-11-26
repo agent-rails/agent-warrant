@@ -921,7 +921,8 @@ class ReadOnlyLedger(_LedgerFile):
     read, or the whole connect with its file checks, after each of
     READ_RECOVERY_DELAYS_SECONDS, one sequence shared by connects and reads; any
     other error, or the same error after the last delay, raises LedgerUnavailable.
-    Python 3.10 does not expose the SQLite error code, so there it is not retried."""
+    Opening makes one connect attempt before that sequence starts. Python 3.10 does
+    not expose the SQLite error code, so there it is not retried."""
 
     _URI_MODE = "ro"
 
