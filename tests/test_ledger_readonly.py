@@ -484,12 +484,14 @@ def test_malformed_ids_are_value_errors(writer, path, writer_uid, group):
 
 
 SQLITE_READONLY = 8
+ERROR_NAMES = {ledger_module.SQLITE_READONLY_RECOVERY: "SQLITE_READONLY_RECOVERY", SQLITE_READONLY: "SQLITE_READONLY"}
 
 
 def wal_index_race(code=ledger_module.SQLITE_READONLY_RECOVERY):
     err = sqlite3.OperationalError("attempt to write a readonly database")
     if code is not None:
         err.sqlite_errorcode = code
+        err.sqlite_errorname = ERROR_NAMES[code]
     return err
 
 
@@ -532,8 +534,11 @@ def test_a_revocation_read_that_races_the_writer_is_retried(reader, world, monke
 def test_a_race_that_outlasts_every_delay_fails_closed(reader, world, monkeypatch, sleeps):
     delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
     calls = failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) + 1))
-    with pytest.raises(LedgerUnavailable, match="readonly database"):
+    with pytest.raises(LedgerUnavailable) as caught:
         reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert str(caught.value) == (
+        "ledger error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) after 5 retries"
+    )
     assert len(calls) == len(delays) + 1
     assert sleeps == list(delays)
 
@@ -570,8 +575,13 @@ def test_an_open_that_races_the_writer_is_retried(writer, path, world, monkeypat
 def test_an_open_race_that_outlasts_every_delay_fails_closed(writer, path, monkeypatch, sleeps):
     delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
     calls = failing_connects(monkeypatch, [wal_index_race()] * (len(delays) + 2))
-    with pytest.raises(LedgerUnavailable, match="readonly database"):
+    with pytest.raises(LedgerUnavailable) as caught:
         TaskLedger.open_read_only(path, UID, GID)
+    assert str(caught.value) == (
+        "ledger database error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) "
+        "after 5 retries"
+    )
+    assert ledger_module._is_wal_index_race(caught.value.__cause__)
     assert len(calls) == len(delays) + 2
     assert sleeps == list(delays)
 
@@ -625,17 +635,18 @@ def test_other_open_errors_are_not_retried(writer, path, monkeypatch, sleeps):
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "detail"),
     [
-        wal_index_race(code=None),
-        wal_index_race(code=SQLITE_READONLY),
-        sqlite3.DatabaseError("database disk image is malformed"),
+        (wal_index_race(code=None), " (no sqlite error code)"),
+        (wal_index_race(code=SQLITE_READONLY), " (SQLITE_READONLY, code 8)"),
+        (sqlite3.DatabaseError("database disk image is malformed"), " (no sqlite error code)"),
     ],
     ids=["no-error-code", "plain-readonly", "malformed"],
 )
-def test_other_read_errors_are_not_retried(reader, world, monkeypatch, sleeps, error):
+def test_other_read_errors_are_not_retried(reader, world, monkeypatch, sleeps, error, detail):
     calls = failing_reads(monkeypatch, "_read_reservation", [error])
-    with pytest.raises(LedgerUnavailable):
+    with pytest.raises(LedgerUnavailable) as caught:
         reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert str(caught.value) == f"ledger error: {error}{detail} after 0 retries"
     assert len(calls) == 1
     assert sleeps == []

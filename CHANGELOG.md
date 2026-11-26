@@ -4,6 +4,10 @@ Notable changes. This project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Ledger
+
+- A `LedgerUnavailable` raised by a `ReadOnlyLedger` read or connect that failed on a SQLite error now names the SQLite error and code and the number of retries, for example `ledger error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) after 5 retries`. SQLite gives every read-only error code the same text, so the message alone did not tell a race that outlasted the retries from an error that is never retried. Other `TaskLedger` database errors also name the code. On Python 3.10 the message says `no sqlite error code`.
+
 ## [0.4.1] - 2026-11-26
 
 ### Ledger
