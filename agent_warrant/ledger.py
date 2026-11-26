@@ -917,11 +917,11 @@ class ReadOnlyLedger(_LedgerFile):
     LedgerUnavailable.
 
     With a read-only `-shm`, a read or a connect while the writer commits can fail
-    with SQLITE_READONLY_RECOVERY and succeed when repeated. That read, or the whole
-    connect with its file checks, is retried after each of
-    READ_RECOVERY_DELAYS_SECONDS; any other error, or the same error after the last
-    delay, raises LedgerUnavailable. Python 3.10 does not expose the SQLite
-    error code, so there it is not retried."""
+    with SQLITE_READONLY_RECOVERY and succeed when repeated. Each call retries that
+    read, or the whole connect with its file checks, after each of
+    READ_RECOVERY_DELAYS_SECONDS, one sequence shared by connects and reads; any
+    other error, or the same error after the last delay, raises LedgerUnavailable.
+    Python 3.10 does not expose the SQLite error code, so there it is not retried."""
 
     _URI_MODE = "ro"
 
@@ -932,7 +932,11 @@ class ReadOnlyLedger(_LedgerFile):
             group=_check_os_id("group", group),
             require_sidecars=True,
         )
-        self._attach(Path(os.path.abspath(path)), policy)
+        try:
+            self._attach(Path(os.path.abspath(path)), policy)
+        except LedgerUnavailable as err:
+            if not _is_wal_index_race(err.__cause__):
+                raise
         try:
             version = self._query(lambda connection: connection.execute("PRAGMA user_version").fetchone()[0])
         except BaseException:
@@ -956,26 +960,16 @@ class ReadOnlyLedger(_LedgerFile):
             connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
         connection.set_authorizer(_authorize_read)
 
-    def _reconnect(self) -> None:
-        delays = iter(READ_RECOVERY_DELAYS_SECONDS)
-        while True:
-            try:
-                super()._reconnect()
-                return
-            except LedgerUnavailable as err:
-                delay = next(delays, None) if _is_wal_index_race(err.__cause__) else None
-                if delay is None:
-                    raise
-            time.sleep(delay)
-
     def _query(self, read: Callable[[sqlite3.Connection], _T]) -> _T:
         delays = iter(READ_RECOVERY_DELAYS_SECONDS)
         with self._lock:
             while True:
                 try:
                     return read(self._live_connection())
-                except LedgerUnavailable:
-                    raise
+                except LedgerUnavailable as err:
+                    delay = next(delays, None) if _is_wal_index_race(err.__cause__) else None
+                    if delay is None:
+                        raise
                 except Exception as err:
                     delay = next(delays, None) if _is_wal_index_race(err) else None
                     if delay is None:

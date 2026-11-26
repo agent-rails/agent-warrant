@@ -564,16 +564,56 @@ def test_an_open_that_races_the_writer_is_retried(writer, path, world, monkeypat
     with TaskLedger.open_read_only(path, UID, GID) as reader:
         assert reader.is_revoked(world.context()) is False
     assert len(calls) == 3
-    assert sleeps == list(ledger_module.READ_RECOVERY_DELAYS_SECONDS[:2])
+    assert sleeps == [ledger_module.READ_RECOVERY_DELAYS_SECONDS[0]]
 
 
 def test_an_open_race_that_outlasts_every_delay_fails_closed(writer, path, monkeypatch, sleeps):
     delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
-    calls = failing_connects(monkeypatch, [wal_index_race()] * (len(delays) + 1))
+    calls = failing_connects(monkeypatch, [wal_index_race()] * (len(delays) + 2))
     with pytest.raises(LedgerUnavailable, match="readonly database"):
         TaskLedger.open_read_only(path, UID, GID)
-    assert len(calls) == len(delays) + 1
+    assert len(calls) == len(delays) + 2
     assert sleeps == list(delays)
+
+
+def test_a_reconnect_that_races_the_writer_is_retried(reader, world, monkeypatch, sleeps):
+    reader._drop(reader._connection)
+    calls = failing_connects(monkeypatch, [wal_index_race(), wal_index_race()])
+    assert reader.is_revoked(world.context()) is False
+    assert len(calls) == 3
+    assert sleeps == list(ledger_module.READ_RECOVERY_DELAYS_SECONDS[:2])
+
+
+def test_connect_and_read_races_share_one_sequence_of_delays(writer, reader, world, monkeypatch, sleeps):
+    writer.reserve(operation(world), [], NOW)
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    reader._drop(reader._connection)
+    failing_connects(monkeypatch, [wal_index_race()] * 2)
+    failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) - 2))
+    assert reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1").state == "reserved"
+    assert sleeps == list(delays)
+
+
+def test_connect_and_read_races_beyond_the_shared_delays_fail_closed(reader, world, monkeypatch, sleeps):
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    reader._drop(reader._connection)
+    failing_connects(monkeypatch, [wal_index_race()] * 2)
+    failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) - 1))
+    with pytest.raises(LedgerUnavailable, match="readonly database"):
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert sleeps == list(delays)
+
+
+def test_a_reconnect_that_finds_the_file_replaced_is_not_retried(reader, path, world, monkeypatch, sleeps):
+    reader._drop(reader._connection)
+    replaced = path.with_name("replaced.db")
+    shutil.copy2(path, replaced)
+    os.replace(replaced, path)
+    calls = failing_connects(monkeypatch, [])
+    with pytest.raises(RevocationSourceUnreachable, match="ledger file was replaced"):
+        reader.is_revoked(world.context())
+    assert calls == []
+    assert sleeps == []
 
 
 def test_other_open_errors_are_not_retried(writer, path, monkeypatch, sleeps):
