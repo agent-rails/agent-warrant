@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import time
 
 import pytest
 from test_ledger import NOW, World
@@ -480,3 +481,161 @@ def test_reader_works_as_a_context_manager(writer, path, world):
 def test_malformed_ids_are_value_errors(writer, path, writer_uid, group):
     with pytest.raises(ValueError):
         TaskLedger.open_read_only(path, writer_uid, group)
+
+
+SQLITE_READONLY = 8
+
+
+def wal_index_race(code=ledger_module.SQLITE_READONLY_RECOVERY):
+    err = sqlite3.OperationalError("attempt to write a readonly database")
+    if code is not None:
+        err.sqlite_errorcode = code
+    return err
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(time, "sleep", recorded.append)
+    return recorded
+
+
+def failing_reads(monkeypatch, name, errors):
+    calls = []
+    original = getattr(TaskLedger, name)
+
+    def read(*args):
+        calls.append(args)
+        if len(calls) <= len(errors):
+            raise errors[len(calls) - 1]
+        return original(*args)
+
+    monkeypatch.setattr(TaskLedger, name, staticmethod(read))
+    return calls
+
+
+def test_a_read_that_races_the_writers_wal_index_update_is_retried(writer, reader, world, monkeypatch, sleeps):
+    writer.reserve(operation(world), [], NOW)
+    calls = failing_reads(monkeypatch, "_read_reservation", [wal_index_race(), wal_index_race()])
+    assert reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1").state == "reserved"
+    assert len(calls) == 3
+    assert sleeps == list(ledger_module.READ_RECOVERY_DELAYS_SECONDS[:2])
+
+
+def test_a_revocation_read_that_races_the_writer_is_retried(reader, world, monkeypatch, sleeps):
+    calls = failing_reads(monkeypatch, "_revoked", [wal_index_race()])
+    assert reader.is_revoked(world.context()) is False
+    assert len(calls) == 2
+    assert sleeps == [ledger_module.READ_RECOVERY_DELAYS_SECONDS[0]]
+
+
+def test_a_race_that_outlasts_every_delay_fails_closed(reader, world, monkeypatch, sleeps):
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    calls = failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) + 1))
+    with pytest.raises(LedgerUnavailable, match="readonly database"):
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert len(calls) == len(delays) + 1
+    assert sleeps == list(delays)
+
+
+def test_a_failing_revocation_read_still_raises_revocation_source_unreachable(reader, world, monkeypatch, sleeps):
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    failing_reads(monkeypatch, "_revoked", [wal_index_race()] * (len(delays) + 1))
+    with pytest.raises(RevocationSourceUnreachable):
+        reader.is_revoked(world.context())
+
+
+def failing_connects(monkeypatch, errors):
+    calls = []
+    original = ReadOnlyLedger._configure
+
+    def configure(self, connection):
+        calls.append(connection)
+        if len(calls) <= len(errors):
+            raise errors[len(calls) - 1]
+        original(self, connection)
+
+    monkeypatch.setattr(ReadOnlyLedger, "_configure", configure)
+    return calls
+
+
+def test_an_open_that_races_the_writer_is_retried(writer, path, world, monkeypatch, sleeps):
+    calls = failing_connects(monkeypatch, [wal_index_race(), wal_index_race()])
+    with TaskLedger.open_read_only(path, UID, GID) as reader:
+        assert reader.is_revoked(world.context()) is False
+    assert len(calls) == 3
+    assert sleeps == [ledger_module.READ_RECOVERY_DELAYS_SECONDS[0]]
+
+
+def test_an_open_race_that_outlasts_every_delay_fails_closed(writer, path, monkeypatch, sleeps):
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    calls = failing_connects(monkeypatch, [wal_index_race()] * (len(delays) + 2))
+    with pytest.raises(LedgerUnavailable, match="readonly database"):
+        TaskLedger.open_read_only(path, UID, GID)
+    assert len(calls) == len(delays) + 2
+    assert sleeps == list(delays)
+
+
+def test_a_reconnect_that_races_the_writer_is_retried(reader, world, monkeypatch, sleeps):
+    reader._drop(reader._connection)
+    calls = failing_connects(monkeypatch, [wal_index_race(), wal_index_race()])
+    assert reader.is_revoked(world.context()) is False
+    assert len(calls) == 3
+    assert sleeps == list(ledger_module.READ_RECOVERY_DELAYS_SECONDS[:2])
+
+
+def test_connect_and_read_races_share_one_sequence_of_delays(writer, reader, world, monkeypatch, sleeps):
+    writer.reserve(operation(world), [], NOW)
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    reader._drop(reader._connection)
+    failing_connects(monkeypatch, [wal_index_race()] * 2)
+    failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) - 2))
+    assert reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1").state == "reserved"
+    assert sleeps == list(delays)
+
+
+def test_connect_and_read_races_beyond_the_shared_delays_fail_closed(reader, world, monkeypatch, sleeps):
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    reader._drop(reader._connection)
+    failing_connects(monkeypatch, [wal_index_race()] * 2)
+    failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) - 1))
+    with pytest.raises(LedgerUnavailable, match="readonly database"):
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert sleeps == list(delays)
+
+
+def test_a_reconnect_that_finds_the_file_replaced_is_not_retried(reader, path, world, monkeypatch, sleeps):
+    reader._drop(reader._connection)
+    replaced = path.with_name("replaced.db")
+    shutil.copy2(path, replaced)
+    os.replace(replaced, path)
+    calls = failing_connects(monkeypatch, [])
+    with pytest.raises(RevocationSourceUnreachable, match="ledger file was replaced"):
+        reader.is_revoked(world.context())
+    assert calls == []
+    assert sleeps == []
+
+
+def test_other_open_errors_are_not_retried(writer, path, monkeypatch, sleeps):
+    calls = failing_connects(monkeypatch, [wal_index_race(code=SQLITE_READONLY)])
+    with pytest.raises(LedgerUnavailable):
+        TaskLedger.open_read_only(path, UID, GID)
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        wal_index_race(code=None),
+        wal_index_race(code=SQLITE_READONLY),
+        sqlite3.DatabaseError("database disk image is malformed"),
+    ],
+    ids=["no-error-code", "plain-readonly", "malformed"],
+)
+def test_other_read_errors_are_not_retried(reader, world, monkeypatch, sleeps, error):
+    calls = failing_reads(monkeypatch, "_read_reservation", [error])
+    with pytest.raises(LedgerUnavailable):
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert len(calls) == 1
+    assert sleeps == []
