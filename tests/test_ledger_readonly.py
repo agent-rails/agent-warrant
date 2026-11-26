@@ -537,7 +537,7 @@ def test_a_race_that_outlasts_every_delay_fails_closed(reader, world, monkeypatc
     with pytest.raises(LedgerUnavailable) as caught:
         reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
     assert str(caught.value) == (
-        "ledger error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) after 5 retries"
+        "ledger error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) after 5 retry delays"
     )
     assert len(calls) == len(delays) + 1
     assert sleeps == list(delays)
@@ -579,7 +579,7 @@ def test_an_open_race_that_outlasts_every_delay_fails_closed(writer, path, monke
         TaskLedger.open_read_only(path, UID, GID)
     assert str(caught.value) == (
         "ledger database error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) "
-        "after 5 retries"
+        "after 5 retry delays"
     )
     assert ledger_module._is_wal_index_race(caught.value.__cause__)
     assert len(calls) == len(delays) + 2
@@ -609,9 +609,43 @@ def test_connect_and_read_races_beyond_the_shared_delays_fail_closed(reader, wor
     reader._drop(reader._connection)
     failing_connects(monkeypatch, [wal_index_race()] * 2)
     failing_reads(monkeypatch, "_read_reservation", [wal_index_race()] * (len(delays) - 1))
-    with pytest.raises(LedgerUnavailable, match="readonly database"):
+    with pytest.raises(LedgerUnavailable) as caught:
         reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert str(caught.value) == (
+        "ledger error: attempt to write a readonly database (SQLITE_READONLY_RECOVERY, code 264) after 5 retry delays"
+    )
     assert sleeps == list(delays)
+
+
+def test_a_failure_after_a_race_is_raised_unchanged(reader, path, world, monkeypatch, sleeps):
+    def replace_then_race(*args):
+        replaced = path.with_name("replaced.db")
+        shutil.copy2(path, replaced)
+        os.replace(replaced, path)
+        raise wal_index_race()
+
+    monkeypatch.setattr(TaskLedger, "_read_reservation", staticmethod(replace_then_race))
+    with pytest.raises(LedgerUnavailable) as caught:
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert str(caught.value) == "ledger file was replaced"
+    assert caught.value.__suppress_context__ is False
+    assert sleeps == [ledger_module.READ_RECOVERY_DELAYS_SECONDS[0]]
+
+
+def test_a_read_error_that_is_not_from_sqlite_names_no_code(reader, world, monkeypatch, sleeps):
+    failing_reads(monkeypatch, "_read_reservation", [ValueError("boom")])
+    with pytest.raises(LedgerUnavailable) as caught:
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert str(caught.value) == "ledger error: boom"
+
+
+def test_one_retry_delay_is_named_in_the_singular(reader, world, monkeypatch, sleeps):
+    failing_reads(monkeypatch, "_read_reservation", [wal_index_race(), wal_index_race(code=SQLITE_READONLY)])
+    with pytest.raises(LedgerUnavailable) as caught:
+        reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
+    assert str(caught.value) == (
+        "ledger error: attempt to write a readonly database (SQLITE_READONLY, code 8) after 1 retry delay"
+    )
 
 
 def test_a_reconnect_that_finds_the_file_replaced_is_not_retried(reader, path, world, monkeypatch, sleeps):
@@ -647,6 +681,6 @@ def test_other_read_errors_are_not_retried(reader, world, monkeypatch, sleeps, e
     calls = failing_reads(monkeypatch, "_read_reservation", [error])
     with pytest.raises(LedgerUnavailable) as caught:
         reader.reservation_readonly(world.root.tenant_id, world.root.task_id, "op-1")
-    assert str(caught.value) == f"ledger error: {error}{detail} after 0 retries"
+    assert str(caught.value) == f"ledger error: {error}{detail}"
     assert len(calls) == 1
     assert sleeps == []

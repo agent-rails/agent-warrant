@@ -208,10 +208,16 @@ def _database_error(err: sqlite3.Error) -> str:
 
 
 def _sqlite_code(err: BaseException) -> str:
+    if not isinstance(err, sqlite3.Error):
+        return ""
     code = getattr(err, "sqlite_errorcode", None)
     if code is None:
         return " (no sqlite error code)"
     return f" ({getattr(err, 'sqlite_errorname', 'unnamed')}, code {code})"
+
+
+def _after_delays(count: int) -> str:
+    return "" if count == 0 else f" after {count} retry delay{'s' if count > 1 else ''}"
 
 
 def _check_os_id(label: str, value: object) -> int:
@@ -928,7 +934,8 @@ class ReadOnlyLedger(_LedgerFile):
     read, or the whole connect with its file checks, after each of
     READ_RECOVERY_DELAYS_SECONDS, one sequence shared by connects and reads; any
     other error, or the same error after the last delay, raises LedgerUnavailable
-    with the SQLite error name and code and the number of retries in its message.
+    with the SQLite error name and code, and the number of retry delays slept if any,
+    in its message.
     Opening makes one connect attempt before that sequence starts. Python 3.10 does
     not expose the SQLite error code, so there it is not retried."""
 
@@ -971,24 +978,25 @@ class ReadOnlyLedger(_LedgerFile):
 
     def _query(self, read: Callable[[sqlite3.Connection], _T]) -> _T:
         delays = iter(READ_RECOVERY_DELAYS_SECONDS)
-        retries = 0
+        slept = 0
         with self._lock:
             while True:
                 try:
                     return read(self._live_connection())
                 except LedgerUnavailable as err:
-                    delay = next(delays, None) if _is_wal_index_race(err.__cause__) else None
+                    race = _is_wal_index_race(err.__cause__)
+                    delay = next(delays, None) if race else None
                     if delay is None:
-                        if retries == 0:
+                        if not race or slept == 0:
                             raise
-                        raise LedgerUnavailable(f"{err} after {retries} retries") from err.__cause__
+                        raise LedgerUnavailable(f"{err}{_after_delays(slept)}") from err.__cause__
                 except Exception as err:
                     delay = next(delays, None) if _is_wal_index_race(err) else None
                     if delay is None:
-                        detail = f"{err}{_sqlite_code(err)} after {retries} retries"
+                        detail = f"{err}{_sqlite_code(err)}{_after_delays(slept)}"
                         raise LedgerUnavailable(f"ledger error: {detail}") from err
                 time.sleep(delay)
-                retries += 1
+                slept += 1
 
     def is_revoked(self, context: ChainContext) -> bool:
         """ChainRevocationChecker: True if the root, any link, the task or the tenant
