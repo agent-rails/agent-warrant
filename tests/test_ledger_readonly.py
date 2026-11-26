@@ -545,6 +545,45 @@ def test_a_failing_revocation_read_still_raises_revocation_source_unreachable(re
         reader.is_revoked(world.context())
 
 
+def failing_connects(monkeypatch, errors):
+    calls = []
+    original = ReadOnlyLedger._configure
+
+    def configure(self, connection):
+        calls.append(connection)
+        if len(calls) <= len(errors):
+            raise errors[len(calls) - 1]
+        original(self, connection)
+
+    monkeypatch.setattr(ReadOnlyLedger, "_configure", configure)
+    return calls
+
+
+def test_an_open_that_races_the_writer_is_retried(writer, path, world, monkeypatch, sleeps):
+    calls = failing_connects(monkeypatch, [wal_index_race(), wal_index_race()])
+    with TaskLedger.open_read_only(path, UID, GID) as reader:
+        assert reader.is_revoked(world.context()) is False
+    assert len(calls) == 3
+    assert sleeps == list(ledger_module.READ_RECOVERY_DELAYS_SECONDS[:2])
+
+
+def test_an_open_race_that_outlasts_every_delay_fails_closed(writer, path, monkeypatch, sleeps):
+    delays = ledger_module.READ_RECOVERY_DELAYS_SECONDS
+    calls = failing_connects(monkeypatch, [wal_index_race()] * (len(delays) + 1))
+    with pytest.raises(LedgerUnavailable, match="readonly database"):
+        TaskLedger.open_read_only(path, UID, GID)
+    assert len(calls) == len(delays) + 1
+    assert sleeps == list(delays)
+
+
+def test_other_open_errors_are_not_retried(writer, path, monkeypatch, sleeps):
+    calls = failing_connects(monkeypatch, [wal_index_race(code=SQLITE_READONLY)])
+    with pytest.raises(LedgerUnavailable):
+        TaskLedger.open_read_only(path, UID, GID)
+    assert len(calls) == 1
+    assert sleeps == []
+
+
 @pytest.mark.parametrize(
     "error",
     [

@@ -874,7 +874,7 @@ class TaskLedger(_LedgerFile):
             return None if row is None else BudgetStatus(budget=row[0], spent=row[1])
 
 
-def _is_wal_index_race(err: Exception) -> bool:
+def _is_wal_index_race(err: BaseException | None) -> bool:
     if not isinstance(err, sqlite3.OperationalError):
         return False
     return getattr(err, "sqlite_errorcode", None) == SQLITE_READONLY_RECOVERY
@@ -916,10 +916,11 @@ class ReadOnlyLedger(_LedgerFile):
     open. Otherwise every call raises LedgerUnavailable. Mutating methods raise
     LedgerUnavailable.
 
-    With a read-only `-shm`, a read while the writer commits can fail with
-    SQLITE_READONLY_RECOVERY and succeed when repeated. That read is retried after
-    each of READ_RECOVERY_DELAYS_SECONDS; any other error, or the same error after
-    the last delay, raises LedgerUnavailable. Python 3.10 does not expose the SQLite
+    With a read-only `-shm`, a read or a connect while the writer commits can fail
+    with SQLITE_READONLY_RECOVERY and succeed when repeated. That read, or the whole
+    connect with its file checks, is retried after each of
+    READ_RECOVERY_DELAYS_SECONDS; any other error, or the same error after the last
+    delay, raises LedgerUnavailable. Python 3.10 does not expose the SQLite
     error code, so there it is not retried."""
 
     _URI_MODE = "ro"
@@ -954,6 +955,18 @@ class ReadOnlyLedger(_LedgerFile):
         if sys.version_info >= (3, 11):
             connection.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
         connection.set_authorizer(_authorize_read)
+
+    def _reconnect(self) -> None:
+        delays = iter(READ_RECOVERY_DELAYS_SECONDS)
+        while True:
+            try:
+                super()._reconnect()
+                return
+            except LedgerUnavailable as err:
+                delay = next(delays, None) if _is_wal_index_race(err.__cause__) else None
+                if delay is None:
+                    raise
+            time.sleep(delay)
 
     def _query(self, read: Callable[[sqlite3.Connection], _T]) -> _T:
         delays = iter(READ_RECOVERY_DELAYS_SECONDS)
